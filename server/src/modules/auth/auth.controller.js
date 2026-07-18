@@ -1,55 +1,86 @@
-/**
- * WHAT: Auth handlers — register, login, me, promote.
- * SECURITY INVARIANTS enforced here (each answers a reviewer question):
- *   1. Passwords are bcrypt-hashed at cost 10, never stored or logged in plaintext.
- *   2. `role` is assigned SERVER-SIDE. register() always creates EMPLOYEE. Elevation happens
- *      only through promote(), which is gated to ADMIN. Roles are never self-selected.
- *   3. passwordHash is stripped from EVERY response via toPublicUser() — one function, so the
- *      hash cannot leak by someone forgetting to omit it on a new endpoint.
- *   4. Login returns an identical error for "no such email" and "wrong password" — user
- *      enumeration defence: an attacker must not learn which emails are registered.
- */
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import { prisma } from '../../config/prisma.js';
-import { signToken } from '../../lib/jwt.js';
-import { ok, fail, AppError } from '../../lib/apiResponse.js';
+import { env } from '../../config/env.js';
+import { ok, fail } from '../../lib/apiResponse.js';
 import { logActivity } from '../../lib/activityLog.js';
 
-// Cost 10: ~50-100ms/hash on commodity hardware. High enough that offline cracking is
-// expensive, low enough that login stays snappy. MUST match the seed's hash cost, or seeded
-// users and registered users would be hashed inconsistently.
 const BCRYPT_ROUNDS = 10;
 
-/** The ONLY shape a User ever leaves the server in. Note the absence of passwordHash. */
-function toPublicUser(user) {
-  return { id: user.id, email: user.email, name: user.name, role: user.role };
+// In-memory store for refresh sessions to avoid db schema changes
+// token -> { userId, expiresAt }
+export const refreshTokens = new Map();
+
+function toPublicUser(user, address = '') {
+  return {
+    id: user.id,
+    fullName: user.name,
+    email: user.email,
+    phoneNumber: user.phone,
+    address: address,
+    role: user.role,
+    createdAt: user.createdAt,
+  };
 }
 
-/** POST /api/auth/register — always creates an EMPLOYEE. */
+function parseCookie(req, name) {
+  const cookieHeader = req.headers.cookie || '';
+  const cookies = cookieHeader.split(';').reduce((acc, cookie) => {
+    const parts = cookie.split('=');
+    const key = parts[0]?.trim();
+    const value = parts.slice(1).join('=')?.trim();
+    if (key) acc[key] = value;
+    return acc;
+  }, {});
+  return cookies[name];
+}
+
+function setRefreshTokenCookie(res, token, maxAgeSeconds = 7 * 24 * 60 * 60) {
+  const secure = env.isProduction ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    `refreshToken=${token || ''}; HttpOnly; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Strict${secure}`
+  );
+}
+
 export async function register(req, res) {
-  // Read named fields only. Anything else in req.body (e.g. a smuggled `role`) is ignored.
-  const { email, password, name } = req.body;
+  const { fullName, email, password, phoneNumber, address } = req.body;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    // On REGISTER we do reveal the email is taken — the user needs to know to log in instead,
-    // and a signup form leaks this anyway. (Login, by contrast, must NOT leak it.)
     return fail(res, { status: 409, message: 'An account with this email already exists.' });
   }
 
   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      name,
-      passwordHash,
-      // Hardcoded. Not from req.body. This one line is the anti-privilege-escalation guarantee.
-      role: 'EMPLOYEE',
-    },
+  // Run in transaction to create both User and default Address
+  const user = await prisma.$transaction(async (tx) => {
+    const createdUser = await tx.user.create({
+      data: {
+        email,
+        name: fullName,
+        phone: phoneNumber,
+        passwordHash,
+        role: 'CUSTOMER',
+      },
+    });
+
+    await tx.address.create({
+      data: {
+        userId: createdUser.id,
+        type: 'SHIPPING',
+        label: 'Default Address',
+        line1: address,
+        city: 'Default',
+        postalCode: '000000',
+        isDefault: true,
+      },
+    });
+
+    return createdUser;
   });
 
-  // Non-blocking audit. No actor id yet beyond the new user themselves.
   logActivity({
     userId: user.id,
     action: 'auth.register',
@@ -58,23 +89,21 @@ export async function register(req, res) {
     metadata: { email: user.email },
   });
 
-  const token = signToken(user);
   return ok(res, {
     status: 201,
     message: 'Account created.',
-    data: { token, user: toPublicUser(user) },
+    data: { user: toPublicUser(user, address) },
   });
 }
 
-/** POST /api/auth/login */
 export async function login(req, res) {
   const { email, password } = req.body;
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { addresses: { where: { isDefault: true } } },
+  });
 
-  // CRITICAL: the SAME response whether the email is unknown or the password is wrong.
-  // We still run bcrypt.compare against a dummy hash when the user is missing so the response
-  // TIME does not betray which case it was (a timing side-channel is user enumeration too).
   const hashToCheck = user?.passwordHash ?? '$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinva';
   const passwordOk = await bcrypt.compare(password, hashToCheck);
 
@@ -82,28 +111,110 @@ export async function login(req, res) {
     return fail(res, { status: 401, message: 'Invalid email or password.' });
   }
 
-  const token = signToken(user);
+  const accessToken = jwt.sign(
+    { id: user.id, email: user.email, role: user.role },
+    env.jwtSecret,
+    { expiresIn: '15m' }
+  );
+
+  const refreshToken = crypto.randomUUID();
+  refreshTokens.set(refreshToken, {
+    userId: user.id,
+    expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  });
+
+  setRefreshTokenCookie(res, refreshToken);
+
+  const defaultAddress = user.addresses?.[0]?.line1 || '';
+
   return ok(res, {
     message: 'Signed in.',
-    data: { token, user: toPublicUser(user) },
+    data: {
+      accessToken,
+      user: {
+        id: user.id,
+        fullName: user.name,
+        email: user.email,
+        role: user.role,
+        phoneNumber: user.phone,
+        address: defaultAddress,
+      },
+    },
   });
 }
 
-/** GET /api/auth/me — returns the caller's own profile from the verified token. */
-export async function me(req, res) {
-  // req.user is set by authMiddleware. We re-read from the DB so a freshly-promoted user sees
-  // their new role here even though their token is stale (see the note in middleware/auth.js).
-  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-  if (!user) return fail(res, { status: 404, message: 'User not found.' });
-  return ok(res, { message: 'Current user.', data: { user: toPublicUser(user) } });
+export async function refresh(req, res) {
+  const token = parseCookie(req, 'refreshToken');
+
+  if (!token) {
+    return fail(res, { status: 401, message: 'Refresh token required.' });
+  }
+
+  const session = refreshTokens.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    refreshTokens.delete(token);
+    return fail(res, { status: 401, message: 'Invalid or expired refresh token.' });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: session.userId } });
+  if (!user) {
+    refreshTokens.delete(token);
+    return fail(res, { status: 401, message: 'User not found.' });
+  }
+
+  // Rotate tokens
+  refreshTokens.delete(token);
+
+  const accessToken = jwt.sign(
+    { id: user.id, email: user.email, role: user.role },
+    env.jwtSecret,
+    { expiresIn: '15m' }
+  );
+
+  const newRefreshToken = crypto.randomUUID();
+  refreshTokens.set(newRefreshToken, {
+    userId: user.id,
+    expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  });
+
+  setRefreshTokenCookie(res, newRefreshToken);
+
+  return ok(res, {
+    message: 'Token refreshed.',
+    data: { accessToken },
+  });
 }
 
-/** POST /api/auth/promote — ADMIN-only (enforced by requireRole in the route). */
+export async function logout(req, res) {
+  const token = parseCookie(req, 'refreshToken');
+  if (token) {
+    refreshTokens.delete(token);
+  }
+
+  setRefreshTokenCookie(res, null, 0);
+
+  return ok(res, { message: 'Logout successful.' });
+}
+
+export async function me(req, res) {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    include: { addresses: { where: { isDefault: true } } },
+  });
+  if (!user) return fail(res, { status: 404, message: 'User not found.' });
+
+  const defaultAddress = user.addresses?.[0]?.line1 || '';
+  return ok(res, {
+    message: 'Current user.',
+    data: { user: toPublicUser(user, defaultAddress) },
+  });
+}
+
 export async function promote(req, res) {
   const { userId } = req.body;
 
   const target = await prisma.user.findUnique({ where: { id: userId } });
-  if (!target) throw new AppError('Target user not found.', 404);
+  if (!target) return fail(res, { status: 404, message: 'Target user not found.' });
 
   const updated = await prisma.user.update({
     where: { id: userId },
@@ -111,7 +222,7 @@ export async function promote(req, res) {
   });
 
   logActivity({
-    userId: req.user.id, // the admin who performed the promotion — the actor, not the target
+    userId: req.user.id,
     action: 'auth.promote',
     entityType: 'User',
     entityId: userId,

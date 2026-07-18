@@ -1,20 +1,24 @@
-/**
- * Notification routes. Every one is behind authMiddleware — there is no such thing as an
- * anonymous notification. No requireRole: any authenticated user manages their OWN
- * notifications regardless of role; the ownership scoping is in the controller, not the role.
- */
 import { Router } from 'express';
 import { authMiddleware } from '../../middleware/auth.js';
-import { listNotifications, markRead, markAllRead } from './notification.controller.js';
+import { requireRole } from '../../middleware/requireRole.js';
+import { validate } from '../../middleware/validate.js';
+import { listNotificationsRules, sendReminderRules } from './notification.validators.js';
+import {
+  listNotifications,
+  markRead,
+  markAllRead,
+  sendManualReminder,
+} from './notification.controller.js';
 
 const router = Router();
 
-router.use(authMiddleware); // applies to every route below — one line, whole router protected
+router.use(authMiddleware);
 
-router.get('/', listNotifications);
-// '/read-all' (one path segment) and '/:id/read' (two segments) cannot collide, so order
-// between them is not load-bearing here. Kept adjacent for readability, not for correctness.
+router.get('/', listNotificationsRules, validate, listNotifications);
 router.patch('/read-all', markAllRead);
 router.patch('/:id/read', markRead);
+
+// Manual trigger queues (admin-only)
+router.post('/send-reminder', requireRole('ADMIN'), sendReminderRules, validate, sendManualReminder);
 
 export default router;

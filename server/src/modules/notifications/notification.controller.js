@@ -1,35 +1,54 @@
-/**
- * WHAT: Read-side of notifications for the bell UI — list mine, mark one read, mark all read.
- * OWNERSHIP (IDOR defence, layer 3 in practice): every query is scoped to req.user.id. A user
- *   can only ever see or mutate THEIR OWN notifications. markRead filters by BOTH id AND userId,
- *   so passing someone else's notification id changes nothing (updateMany returns count 0)
- *   rather than letting you mark a stranger's notification read.
- */
 import { prisma } from '../../config/prisma.js';
-import { ok } from '../../lib/apiResponse.js';
+import { ok, fail } from '../../lib/apiResponse.js';
+import { notificationService } from './notification.service.js';
 
-/** GET /api/notifications — the caller's notifications, newest first, plus an unread count. */
 export async function listNotifications(req, res) {
-  const [notifications, unreadCount] = await Promise.all([
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '10', 10)));
+
+  const where = {};
+  if (req.user.role !== 'ADMIN') {
+    where.userId = req.user.id;
+  }
+
+  const [notifications, totalCount] = await Promise.all([
     prisma.notification.findMany({
-      where: { userId: req.user.id },
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
       orderBy: { createdAt: 'desc' },
-      take: 50, // the bell shows recent items, not all of history
+      include: { user: { select: { id: true, email: true, name: true, phone: true } } },
     }),
-    prisma.notification.count({ where: { userId: req.user.id, readStatus: false } }),
+    prisma.notification.count({ where }),
   ]);
 
+  const unreadCount = await prisma.notification.count({
+    where: { userId: req.user.id, readStatus: false },
+  });
+
+  const totalPages = Math.ceil(totalCount / limit);
+
   return ok(res, {
-    message: 'Notifications retrieved.',
-    data: notifications,
-    meta: { unreadCount },
+    data: notifications.map((n) => ({
+      id: n.id,
+      recipientEmail: n.user?.email || '',
+      recipientPhone: n.user?.phone || '',
+      type: n.type,
+      channel: 'EMAIL',
+      status: n.readStatus ? 'READ' : 'SENT',
+      sentAt: n.createdAt,
+    })),
+    meta: {
+      totalCount,
+      page,
+      limit,
+      totalPages,
+      unreadCount,
+    },
   });
 }
 
-/** PATCH /api/notifications/:id/read — mark ONE of mine read. */
 export async function markRead(req, res) {
-  // updateMany with a userId filter, not update({ where: { id } }): the extra userId condition
-  // is the ownership scope. update() would touch the row by id alone — an IDOR hole.
   const result = await prisma.notification.updateMany({
     where: { id: req.params.id, userId: req.user.id },
     data: { readStatus: true },
@@ -38,7 +57,6 @@ export async function markRead(req, res) {
   return ok(res, { message: 'Marked read.', data: { updated: result.count } });
 }
 
-/** PATCH /api/notifications/read-all — mark all of mine read. */
 export async function markAllRead(req, res) {
   const result = await prisma.notification.updateMany({
     where: { userId: req.user.id, readStatus: false },
@@ -46,4 +64,31 @@ export async function markAllRead(req, res) {
   });
 
   return ok(res, { message: 'All marked read.', data: { updated: result.count } });
+}
+
+export async function sendManualReminder(req, res) {
+  const { orderId, notificationType } = req.body;
+
+  const order = await prisma.rentalOrder.findUnique({
+    where: { id: orderId },
+    include: { customer: true },
+  });
+
+  if (!order) {
+    return fail(res, { status: 404, message: 'Order not found.' });
+  }
+
+  const msg =
+    notificationType === 'OVERDUE_ALERT_1H'
+      ? `Critical Warning: Your rental for order "${order.orderNumber}" is overdue! Late fees are accumulating.`
+      : `Friendly reminder: Your rental return for order "${order.orderNumber}" is due in 24 hours.`;
+
+  await notificationService.create({
+    userId: order.customerId,
+    type: notificationType,
+    message: msg,
+    entityRef: orderId,
+  });
+
+  return ok(res, { message: 'Notification job queued successfully in BullMQ.' });
 }
