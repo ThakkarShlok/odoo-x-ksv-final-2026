@@ -1,13 +1,51 @@
-/**
- * Global stylesheet. Import order matters:
- * tokens.css must be resolved before Tailwind's base layer so the custom properties exist
- * by the time any utility references them. Vite inlines this @import at build time.
- */
-@import './styles/tokens.css';
+@import "./styles/tokens.css";
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'Inter Variable', sans-serif;
+  
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-status-active: hsl(var(--status-active));
+  --color-status-active-bg: hsl(var(--status-active-bg));
+  --color-status-inactive: hsl(var(--status-inactive));
+  --color-status-inactive-bg: hsl(var(--status-inactive-bg));
+  --color-status-warning: hsl(var(--status-warning));
+  --color-status-warning-bg: hsl(var(--status-warning-bg));
+  --color-status-danger: hsl(var(--status-danger));
+  --color-status-danger-bg: hsl(var(--status-danger-bg));
+  
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
 
 @layer base {
   * {
@@ -16,22 +54,13 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    /* Long ERP tables are read, not skimmed. 1.5 is a readability floor, not a preference. */
     line-height: 1.5;
   }
 
-  /**
-   * ACCESSIBILITY — keyboard focus.
-   * :focus-visible, not :focus. :focus would draw a ring on mouse clicks too, which is the
-   * reason developers reach for `outline: none` — and that removes the ring for keyboard
-   * users as well, stranding them with no idea where they are. :focus-visible shows the ring
-   * only for keyboard navigation, so there is no incentive to ever disable it.
-   */
   :focus-visible {
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 
-  /* Respect the OS "reduce motion" setting. Non-negotiable for vestibular disorders. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -45,11 +74,6 @@
 }
 
 @layer components {
-  /**
-   * The ONE restrained gradient in the product: hero surface only.
-   * A single, barely-there tonal shift on the accent. Not "gradient soup" — if you find
-   * yourself adding a second gradient elsewhere, delete it instead.
-   */
   .zenith-hero-gradient {
     background-image: linear-gradient(
       160deg,
