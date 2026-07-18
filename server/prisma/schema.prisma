@@ -1,16 +1,48 @@
-// Zenith ERP — core schema.
+// =============================================================================
+// Zenith Rental Management System — data model
+// =============================================================================
+// MODELING PHILOSOPHY (read this first — it is the map to every decision below):
 //
-// SCOPE: this file is deliberately domain-neutral. `Item` is a placeholder entity that
-// exists to prove the pipe and host the pattern examples. Tomorrow it is RENAMED to the
-// real domain entity (Asset / Vehicle / Table / PurchaseOrder / Room). User, Notification
-// and ActivityLog are infrastructure and survive that rename untouched.
+// NORMALIZED (3NF) for master data and money:
+//   - Category / Product / ProductUnit is a strict hierarchy: a Product is a rentable *type*,
+//     a ProductUnit is one physical copy with its own serial, condition, and status. Reservations
+//     and order lines point at a UNIT, never a type, because availability is a property of a
+//     physical thing (see the unit-vs-pool note on Reservation).
+//   - Pricelist / PricelistItem separate "a rate table" from "a rate", so an org can run several
+//     price lists (seasonal, customer-tier) without duplicating product rows.
+//   - Money movements live in their own tables (Payment, DepositLedger, Invoice, LateFee) rather
+//     than as columns on the order, because they are events with their own lifecycle and count.
 //
-// MIGRATION LAYOUT (two migrations, on purpose):
-//   001_init                   — everything Prisma can express. Generated, never hand-edited.
-//   002_concurrency_primitives — everything Prisma CANNOT express (partial unique index,
-//                                btree_gist, EXCLUDE constraint). Hand-written SQL.
-// Keeping them separate means a reviewer can see exactly where we stopped trusting the ORM
-// and reached for raw DDL, instead of that being buried inside a generated file.
+// DELIBERATELY DENORMALIZED, for TEMPORAL CORRECTNESS (a historical row must never change
+// meaning when an admin later edits a pricelist or a setting):
+//   - RentalOrderLine.rateApplied           snapshots the rate charged at pricing time.
+//   - LateFee.{ruleType,ruleValue,graceHours,capAmount} snapshot the penalty rule used at
+//     computation time.
+//   - RentalOrder.rentalStart/rentalEnd + Reservation.during duplicate the period so the
+//     availability constraint and the financial record cannot drift apart.
+//   These are copies ON PURPOSE. Recomputing money from live config would silently rewrite
+//   history the moment config changes — the cardinal sin in an ERP. See docs/schema-decisions.md.
+//
+// APPEND-ONLY, never a mutable balance:
+//   - DepositLedger records HELD / DEDUCTED / REFUNDED entries; the current deposit balance is
+//     DERIVED by summing them. There is no deposit_balance column to get out of sync.
+//   - ActivityLog is write-only audit. Both refuse UPDATE/DELETE by convention and (ledger) by
+//     a balance trigger in the hand-written migration.
+//
+// MONEY: every monetary column is Decimal(12,2). NEVER Float (binary rounding corrupts sums),
+//   NEVER integer paise (loses the schema-level scale contract and pushes currency math into the
+//   app). Decimal is exact base-10; (12,2) holds up to 9,999,999,999.99 — ample for rentals.
+//
+// INTEGRITY: onDelete is Restrict for anything financial or historical (payments, ledger,
+//   invoices, late fees, events) so the DB refuses to orphan money. Cascade is used ONLY for the
+//   genuinely-owned operational children of a still-disposable order (lines, reservations) — see
+//   the comment on RentalOrderLine. Net effect: a bare QUOTATION can be hard-deleted; the instant
+//   money or history attaches, the order becomes permanent.
+//
+// WHAT PRISMA CANNOT EXPRESS lives in the hand-written migration (see 004_*):
+//   the EXCLUDE no-overlap constraint (via btree_gist), partial unique indexes, CHECK
+//   constraints, the deposit-balance trigger, and the partial "pending events" index.
+// =============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -19,147 +51,569 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  // No `directUrl`. That field exists to let migrations bypass a connection pooler
-  // (PgBouncer/Neon) that cannot run DDL in transaction-pooling mode. We connect
-  // straight to a local postgres over TCP, so there is no pooled/direct split to declare.
+  // No directUrl: local Postgres over TCP, no pooler split to declare.
 }
 
-// ---------------------------------------------------------------------------
-// Enums — the type system is the first line of defence.
-// A status is never a free-form string. Illegal values are rejected by Postgres
-// itself, not by a forgotten `if` in a controller.
-// ---------------------------------------------------------------------------
+// ============================ ENUMS ==========================================
+// Every state/type is an enum, not a string. Illegal values are rejected by Postgres itself,
+// not by a forgotten `if`. Enum vs lookup-table rationale is in docs/schema-decisions.md.
 
 enum Role {
   ADMIN
-  MANAGER
-  EMPLOYEE
+  CUSTOMER
 }
 
-enum ItemStatus {
-  ACTIVE
-  INACTIVE
+enum AddressType {
+  SHIPPING
+  BILLING
 }
 
-// ---------------------------------------------------------------------------
-// User — authentication + the single source of authorization truth.
-// ---------------------------------------------------------------------------
+enum ProductCondition {
+  NEW
+  GOOD
+  FAIR
+  POOR
+  DAMAGED
+}
 
+enum ProductUnitStatus {
+  AVAILABLE
+  RESERVED
+  RENTED
+  MAINTENANCE
+  DAMAGED
+  RETIRED
+}
+
+enum DurationUnit {
+  HOURLY
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum FulfillmentMethod {
+  STORE_PICKUP
+  DELIVERY
+}
+
+// Lifecycle: QUOTATION → CONFIRMED → PICKED_UP → IN_RENTAL → RETURNED → CLOSED,
+// with CANCELLED reachable before pickup. "Late" is NOT a status — it is derived from the
+// return event's actual timestamp vs rentalEnd + grace, and evidenced by a LateFee row. Encoding
+// derivable facts as status is how status columns start lying.
+enum RentalOrderStatus {
+  QUOTATION
+  CONFIRMED
+  PICKED_UP
+  IN_RENTAL
+  RETURNED
+  CLOSED
+  CANCELLED
+}
+
+enum ReservationStatus {
+  HELD // soft hold on a quotation
+  ACTIVE // confirmed / currently out
+  FULFILLED // returned, hold discharged
+  RELEASED // hold voluntarily dropped (quotation abandoned)
+  CANCELLED // order cancelled
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentPurpose {
+  RENTAL
+  DEPOSIT
+  LATE_FEE
+}
+
+// Direction is encoded by TYPE, and the amount is always a positive magnitude (CHECK amount > 0).
+// balance = Σ HELD − Σ DEDUCTED − Σ REFUNDED. Storing magnitude+type (not a signed amount) makes
+// each row self-describing and lets a single CHECK guard positivity.
+enum DepositEntryType {
+  HELD
+  DEDUCTED
+  REFUNDED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  VOID
+}
+
+enum DepositRuleType {
+  PERCENTAGE // depositValue is a percent of rental subtotal
+  FLAT // depositValue is an absolute amount
+}
+
+enum LateFeeRuleType {
+  PER_DAY_FLAT // ruleValue currency units per day late
+  PER_DAY_PERCENTAGE // ruleValue percent of line/order subtotal per day late
+  FLAT // ruleValue one-off amount
+}
+
+enum RentalEventType {
+  PICKUP
+  RETURN
+}
+
+// ============================ MASTER DATA ====================================
+
+// User — authentication + authorization truth. Preserved from the boilerplate; role set narrowed
+// to the two roles this domain actually has. Portal sign-ups default to CUSTOMER; ADMIN is
+// seeded or promoted, never self-selected.
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
   passwordHash String
   name         String
-  // Role is stored server-side and NEVER accepted from a registration payload.
-  // Self-selected roles are privilege escalation with extra steps.
-  role         Role     @default(EMPLOYEE)
+  phone        String?
+  role         Role     @default(CUSTOMER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  items         Item[]
-  notifications Notification[]
-  activityLogs  ActivityLog[]
+  addresses      Address[]
+  orders         RentalOrder[]  @relation("CustomerOrders")
+  inspections    RentalEvent[]  @relation("InspectedBy")
+  notifications  Notification[]
+  activityLogs   ActivityLog[]
 
   @@map("users")
 }
 
-// ---------------------------------------------------------------------------
-// Item — the throwaway domain entity. Rename me tomorrow.
-// ---------------------------------------------------------------------------
+// Address — many per customer. Owned by the user (Cascade): if a customer with no orders is
+// deleted, their addresses go too. But an address REFERENCED by an order cannot be deleted
+// (RentalOrder.deliveryAddress is Restrict), so history is never orphaned.
+model Address {
+  id         String      @id @default(uuid()) @db.Uuid
+  userId     String      @db.Uuid
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       AddressType @default(SHIPPING)
+  label      String?
+  line1      String
+  line2      String?
+  city       String
+  state      String?
+  postalCode String
+  country    String      @default("India")
+  isDefault  Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
 
-model Item {
-  id        String     @id @default(uuid()) @db.Uuid
-  name      String
-  status    ItemStatus @default(ACTIVE)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  deliveryOrders RentalOrder[] @relation("DeliveryAddress")
 
-  // Ownership column. Today it only records who created the row; tomorrow it is what
-  // requireOwnershipOr(...) scopes queries by, so a non-admin cannot read another
-  // user's records by guessing a UUID. See src/middleware/requireRole.js.
-  createdById String @db.Uuid
-  createdBy   User   @relation(fields: [createdById], references: [id])
-
-  // Composite index, not two single-column indexes. The list endpoint's access pattern is
-  // "filter by status, order by createdAt desc" — Postgres can satisfy both the WHERE and
-  // the ORDER BY from this one index. Column order matters: equality column first,
-  // range/sort column second.
-  @@index([status, createdAt])
-  @@index([createdById])
-  @@map("items")
+  // FK index (Postgres does NOT auto-index FK columns): serves "all addresses for this user",
+  // the portal address book. A partial unique "one default per user" is in migration 004.
+  @@index([userId])
+  @@map("addresses")
 }
 
-// ---------------------------------------------------------------------------
-// Notification — PERSISTENT, user-addressed, survives reload.
-// Deliberately distinct from react-hot-toast, which is transient UI feedback that
-// dies on refresh. Both exist because they answer different questions:
-// toast = "did my click work?"  notification = "what happened while I was away?"
-// ---------------------------------------------------------------------------
+// Category — product taxonomy, self-referential for sub-categories. parentId SetNull so deleting
+// a parent category orphans children to top-level rather than cascading away real products.
+model Category {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String     @unique
+  parentId  String?    @db.Uuid
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Category[] @relation("CategoryTree")
+  createdAt DateTime   @default(now())
 
+  products Product[]
+
+  @@index([parentId])
+  @@map("categories")
+}
+
+// Product — a rentable TYPE. brand/manufacturer/color/size are descriptive attributes kept as
+// columns, not their own tables: in this domain they have no independent lifecycle or referential
+// need, and browse/search filters on CATEGORY (which IS a table) — not brand. Promote brand to a
+// table only if it gains its own data (catalogs, supplier contracts). category is Restrict: you
+// cannot delete a category that still has products.
+model Product {
+  id             String   @id @default(uuid()) @db.Uuid
+  categoryId     String   @db.Uuid
+  category       Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  name           String
+  description    String?
+  sku            String?  @unique
+  brand          String?
+  manufacturer   String?
+  color          String?
+  size           String?
+  isRentable     Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  units          ProductUnit[]
+  pricelistItems PricelistItem[]
+  orderLines     RentalOrderLine[]
+
+  // Product browse by category. Query shape:
+  //   SELECT ... FROM products WHERE categoryId = $1 AND isRentable ORDER BY name;
+  // categoryId (equality) leftmost, isRentable narrows, name for the sort/scan.
+  @@index([categoryId, isRentable])
+  @@map("products")
+}
+
+// ProductUnit — one physical copy. Carries the serial/asset tag and the per-unit availability
+// status. This is the grain the no-overlap rule operates on (see Reservation).
+model ProductUnit {
+  id           String            @id @default(uuid()) @db.Uuid
+  productId    String            @db.Uuid
+  product      Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  serialNumber String            @unique
+  condition    ProductCondition  @default(GOOD)
+  status       ProductUnitStatus @default(AVAILABLE)
+  notes        String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  reservations Reservation[]
+  orderLines   RentalOrderLine[]
+
+  // Availability search. Query shape:
+  //   SELECT u.* FROM product_units u JOIN products p ON p.id = u."productId"
+  //   WHERE p."categoryId" = $1 AND u.status = 'AVAILABLE'
+  //     AND NOT EXISTS (overlapping reservation on u.id for [$from,$to));   -- overlap via GiST
+  // (productId, status) lets us find candidate units of a product cheaply; the GiST index on the
+  // reservation drives the overlap check. status is second because we always know the product.
+  @@index([productId, status])
+  @@map("product_units")
+}
+
+// Pricelist — a named, optionally time-bounded rate table. isDefault is guarded by a partial
+// unique index (one default) in migration 004.
+model Pricelist {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  currency  String    @default("INR")
+  isDefault Boolean   @default(false)
+  isActive  Boolean   @default(true)
+  validFrom DateTime?
+  validTo   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  items  PricelistItem[]
+  orders RentalOrder[]
+
+  @@map("pricelists")
+}
+
+// PricelistItem — one rate: (pricelist, product, durationUnit) → rate. The @@unique makes that
+// triple the natural key so a product cannot have two daily rates in the same list. pricelist is
+// the owning parent (Cascade): dropping a price list drops its rates. product is Restrict.
+model PricelistItem {
+  id           String       @id @default(uuid()) @db.Uuid
+  pricelistId  String       @db.Uuid
+  pricelist    Pricelist    @relation(fields: [pricelistId], references: [id], onDelete: Cascade)
+  productId    String       @db.Uuid
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  durationUnit DurationUnit
+  rate         Decimal      @db.Decimal(12, 2)
+  createdAt    DateTime     @default(now())
+
+  @@unique([pricelistId, productId, durationUnit])
+  // FK index for "all rates for this product" (product detail page pulls every duration rate).
+  @@index([productId])
+  @@map("pricelist_items")
+}
+
+// RentalSettings — org configuration. depositValue/lateFeeValue are interpreted per their *Type
+// enum (money when FLAT, percent otherwise) — one value + a type discriminator, commented so the
+// overload is explicit. Orders/late-fees SNAPSHOT these values at the moment they apply them, so
+// editing this row never rewrites past money. "One active row" is enforced by a partial unique
+// index in migration 004.
+model RentalSettings {
+  id              String          @id @default(uuid()) @db.Uuid
+  name            String          @default("Default")
+  isActive        Boolean         @default(true)
+  currency        String          @default("INR")
+  depositRuleType DepositRuleType @default(PERCENTAGE)
+  depositValue    Decimal         @db.Decimal(12, 2) // percent OR amount, per depositRuleType
+  gracePeriodHours Int            @default(0)
+  lateFeeRuleType LateFeeRuleType @default(PER_DAY_FLAT)
+  lateFeeValue    Decimal         @db.Decimal(12, 2) // per-day amount/percent OR flat, per rule
+  maxLateFeeCap   Decimal         @db.Decimal(12, 2) // absolute ceiling on any single penalty
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@map("rental_settings")
+}
+
+// ============================ TRANSACTIONAL ==================================
+
+// RentalOrder — the quotation→order lifecycle aggregate. One rental period for the whole order
+// (the problem describes picking dates, then adding products); per-line periods would move
+// rentalStart/rentalEnd onto RentalOrderLine, noted for the record. Totals are snapshots of the
+// summed lines at confirmation. customer is Restrict (a customer with orders is undeletable);
+// deliveryAddress is Restrict (Nullable — required only for DELIVERY, enforced by a CHECK in 004).
+model RentalOrder {
+  id                String            @id @default(uuid()) @db.Uuid
+  orderNumber       String            @unique
+  customerId        String            @db.Uuid
+  customer          User              @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Restrict)
+  status            RentalOrderStatus @default(QUOTATION)
+  fulfillmentMethod FulfillmentMethod @default(STORE_PICKUP)
+  deliveryAddressId String?           @db.Uuid
+  deliveryAddress   Address?          @relation("DeliveryAddress", fields: [deliveryAddressId], references: [id], onDelete: Restrict)
+
+  // pricelist actually used — kept for auditability of which rate table priced this order.
+  pricelistId String?    @db.Uuid
+  pricelist   Pricelist? @relation(fields: [pricelistId], references: [id], onDelete: Restrict)
+
+  // Single rental window for the order. CHECK (rentalEnd > rentalStart) is in migration 004.
+  rentalStart DateTime
+  rentalEnd   DateTime
+
+  // Money — all Decimal(12,2), all CHECK >= 0 (migration 004).
+  subtotal     Decimal @db.Decimal(12, 2) @default(0)
+  taxTotal     Decimal @db.Decimal(12, 2) @default(0)
+  total        Decimal @db.Decimal(12, 2) @default(0)
+  depositTotal Decimal @db.Decimal(12, 2) @default(0)
+  currency     String  @default("INR")
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime?
+  cancelledAt DateTime?
+
+  lines         RentalOrderLine[]
+  reservations  Reservation[]
+  payments      Payment[]
+  depositLedger DepositLedger[]
+  lateFees      LateFee[]
+  invoices      Invoice[]
+  events        RentalEvent[]
+
+  // Customer order history. Query shape:
+  //   SELECT ... FROM rental_orders WHERE customerId = $1 ORDER BY createdAt DESC;
+  @@index([customerId, createdAt(sort: Desc)])
+
+  // Dashboard: Active Rentals / Rentals Due Today / Overdue Rentals. Query shape (overdue):
+  //   SELECT ... FROM rental_orders WHERE status = 'IN_RENTAL' AND rentalEnd < now();
+  // status equality is the leftmost prefix; rentalEnd serves the range predicate AND any
+  // ORDER BY rentalEnd. One composite index answers all three date-vs-status dashboard cards
+  // because they differ only in the rentalEnd comparison.
+  @@index([status, rentalEnd])
+
+  // Dashboard: Upcoming Pickups (confirmed, not yet collected, by start date). Query shape:
+  //   SELECT ... FROM rental_orders WHERE status = 'CONFIRMED' AND rentalStart BETWEEN now() AND $window;
+  @@index([status, rentalStart])
+  @@map("rental_orders")
+}
+
+// RentalOrderLine — a product+unit at a snapshotted rate for the order's period.
+// onDelete Cascade is the ONE cascade we accept on the order aggregate, and only because a line
+// has no independent existence or money of its own — it is dependent detail. It is safe precisely
+// because the order it hangs off becomes undeletable the moment a Payment/Invoice/Ledger row
+// (all Restrict) attaches; so cascade can only ever fire while the order is still a bare draft.
+model RentalOrderLine {
+  id            String       @id @default(uuid()) @db.Uuid
+  orderId       String       @db.Uuid
+  order         RentalOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId     String       @db.Uuid
+  product       Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productUnitId String       @db.Uuid
+  productUnit   ProductUnit  @relation(fields: [productUnitId], references: [id], onDelete: Restrict)
+
+  durationUnit  DurationUnit
+  durationCount Int          // number of duration units (e.g. 3 DAILY); CHECK > 0 in 004
+  rateApplied   Decimal      @db.Decimal(12, 2) // SNAPSHOT of the rate charged, not a live lookup
+  lineSubtotal  Decimal      @db.Decimal(12, 2) // rateApplied * durationCount; CHECK >= 0
+  createdAt     DateTime     @default(now())
+
+  lateFees LateFee[]
+
+  // A given unit may appear at most once per order.
+  @@unique([orderId, productUnitId])
+  @@index([orderId])
+  @@index([productId])
+  @@index([productUnitId])
+  @@map("rental_order_lines")
+}
+
+// Reservation — the time-range HOLD on a specific ProductUnit. This is the row that carries the
+// EXCLUDE constraint (migration 004): no two reservations for the SAME unit may have OVERLAPPING
+// `during` ranges while the reservation is live (HELD/ACTIVE/FULFILLED). See the unit-vs-pool note.
+//
+// `during` is Unsupported("tsrange"): Prisma has no range type, so the column is opaque to it —
+// Prisma creates it but never reads/writes it (raw SQL does, via tsrange(start,end)). orderId is a
+// denormalized Cascade parent for direct "release all holds for this order" and dashboard joins;
+// it is always consistent with the order line for the same unit. productUnit is Restrict — a unit
+// with reservation history cannot be deleted.
+model Reservation {
+  id            String                @id @default(uuid()) @db.Uuid
+  orderId       String                @db.Uuid
+  order         RentalOrder           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productUnitId String                @db.Uuid
+  productUnit   ProductUnit           @relation(fields: [productUnitId], references: [id], onDelete: Restrict)
+  during        Unsupported("tsrange")
+  status        ReservationStatus     @default(HELD)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  // FK btree on the unit IN ADDITION to the GiST(productUnitId, during) the EXCLUDE creates:
+  // GiST answers "does anything overlap?" but is weaker at plain equality joins/cascade checks,
+  // which this btree serves. Both earn their keep; they are not redundant.
+  @@index([productUnitId])
+  @@index([orderId])
+  @@map("reservations")
+}
+
+// Payment — a money-in event. amount is a positive magnitude (CHECK > 0); purpose says what it
+// paid for, status where it is in the capture/refund lifecycle. Restrict: money is never orphaned.
+model Payment {
+  id          String         @id @default(uuid()) @db.Uuid
+  orderId     String         @db.Uuid
+  order       RentalOrder    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  amount      Decimal        @db.Decimal(12, 2)
+  purpose     PaymentPurpose
+  status      PaymentStatus  @default(PENDING)
+  method      String?
+  reference   String?        // gateway txn id
+  createdAt   DateTime       @default(now())
+  processedAt DateTime?
+
+  // Order payment history / reconciliation by state.
+  @@index([orderId, status])
+  @@map("payments")
+}
+
+// DepositLedger — APPEND-ONLY. HELD on confirmation, DEDUCTED for a penalty, REFUNDED on close.
+// No balance column anywhere: balance = Σ(HELD) − Σ(DEDUCTED) − Σ(REFUNDED). A trigger in
+// migration 004 refuses any DEDUCTED/REFUNDED that would drive the per-order balance negative
+// (the "deduction ≤ held" rule, which is an aggregate condition a row CHECK cannot express).
+// No updatedAt: entries are immutable. Restrict: financial history is never deleted.
+model DepositLedger {
+  id              String           @id @default(uuid()) @db.Uuid
+  orderId         String           @db.Uuid
+  order           RentalOrder      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  entryType       DepositEntryType
+  amount          Decimal          @db.Decimal(12, 2) // positive magnitude; CHECK > 0
+  reason          String?
+  relatedLateFeeId String?         @db.Uuid
+  relatedLateFee  LateFee?         @relation(fields: [relatedLateFeeId], references: [id], onDelete: Restrict)
+  createdAt       DateTime         @default(now())
+
+  // Ledger is read per-order in insertion order to compute the running balance.
+  @@index([orderId, createdAt])
+  @@index([relatedLateFeeId])
+  @@map("deposit_ledger")
+}
+
+// LateFee — a computed penalty carrying the RULE SNAPSHOT used to compute it. Because capAmount
+// is snapshotted onto the row, the "late fee ≤ cap" rule becomes a plain row-level CHECK
+// (amount <= capAmount) — enforced in migration 004. Editing RentalSettings later cannot change
+// what this penalty means. Restrict: penalties are financial history.
+model LateFee {
+  id          String          @id @default(uuid()) @db.Uuid
+  orderId     String          @db.Uuid
+  order       RentalOrder     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderLineId String?         @db.Uuid
+  orderLine   RentalOrderLine? @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+  amount      Decimal         @db.Decimal(12, 2)
+  daysLate    Int
+  // Rule snapshot — the exact parameters used, copied at computation time:
+  ruleType    LateFeeRuleType
+  ruleValue   Decimal         @db.Decimal(12, 2)
+  graceHours  Int
+  capAmount   Decimal         @db.Decimal(12, 2)
+  computedAt  DateTime        @default(now())
+
+  depositEntries DepositLedger[]
+
+  @@index([orderId])
+  @@index([orderLineId])
+  @@map("late_fees")
+}
+
+// Invoice — issued document for an order. Restrict: an invoice is a legal/financial record.
+model Invoice {
+  id            String        @id @default(uuid()) @db.Uuid
+  orderId       String        @db.Uuid
+  order         RentalOrder   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  invoiceNumber String        @unique
+  status        InvoiceStatus @default(DRAFT)
+  amount        Decimal       @db.Decimal(12, 2)
+  issuedAt      DateTime?
+  createdAt     DateTime      @default(now())
+
+  @@index([orderId])
+  @@map("invoices")
+}
+
+// RentalEvent — pickups and returns in ONE table with a type discriminator, because they share
+// the same shape (scheduled vs actual timestamp + inspection). Two near-identical tables would be
+// duplication; the return-specific "was it late?" is DERIVED (actualAt > order.rentalEnd + grace),
+// not a stored column. inspectedBy is SetNull (keep the event if the staff account is removed).
+// Restrict on order: inspection/damage records are history.
+model RentalEvent {
+  id             String          @id @default(uuid()) @db.Uuid
+  orderId        String          @db.Uuid
+  order          RentalOrder     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  eventType      RentalEventType
+  scheduledAt    DateTime
+  actualAt       DateTime?
+  conditionNotes String?
+  damageFlag     Boolean         @default(false)
+  inspectedById  String?         @db.Uuid
+  inspectedBy    User?           @relation("InspectedBy", fields: [inspectedById], references: [id], onDelete: SetNull)
+  createdAt      DateTime        @default(now())
+
+  // Dashboard: Upcoming Pickups / Upcoming Returns. Query shape:
+  //   SELECT ... FROM rental_events
+  //   WHERE eventType = 'RETURN' AND actualAt IS NULL AND scheduledAt BETWEEN now() AND $window
+  //   ORDER BY scheduledAt;
+  // eventType (equality) leftmost, scheduledAt for the range+sort. A PARTIAL index on
+  // (actualAt IS NULL) in migration 004 shrinks this to only the still-pending events, which is
+  // exactly what the "upcoming" cards want.
+  @@index([eventType, scheduledAt])
+  @@index([orderId])
+  @@index([inspectedById])
+  @@map("rental_events")
+}
+
+// ============================ CROSS-CUTTING (preserved) ======================
+
+// Notification — persistent, user-addressed. Unchanged from the boilerplate.
 model Notification {
   id         String   @id @default(uuid()) @db.Uuid
   userId     String   @db.Uuid
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   type       String
   message    String
-  // Loose pointer ("item:<uuid>") rather than a FK. A notification must outlive the row it
-  // describes — a hard FK would either block deletes or cascade away the audit trail.
   entityRef  String?
   readStatus Boolean  @default(false)
   createdAt  DateTime @default(now())
 
-  // Serves the bell's hot query: unread-for-this-user, newest first.
   @@index([userId, readStatus, createdAt])
   @@map("notifications")
 }
 
-// ---------------------------------------------------------------------------
-// ActivityLog — append-only audit trail. No update/delete paths exist in code.
-// ---------------------------------------------------------------------------
-
+// ActivityLog — append-only audit trail. Unchanged from the boilerplate. userId SetNull so
+// removing a user never erases the record that they acted.
 model ActivityLog {
   id         String   @id @default(uuid()) @db.Uuid
-  // Nullable: system-generated events have no human actor. Also means deleting a user
-  // must not erase the record that they acted — SetNull, never Cascade.
   userId     String?  @db.Uuid
   user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   action     String
   entityType String
   entityId   String?
-  // JSONB, not JSON: binary storage, and it is the only variant Postgres can index.
-  // Schemaless on purpose — every domain logs a different payload shape, and we are not
-  // migrating this table at 3am tomorrow.
   metadata   Json?    @db.JsonB
   createdAt  DateTime @default(now())
 
   @@index([entityType, entityId])
   @@index([createdAt])
   @@map("activity_logs")
-}
-
-// ---------------------------------------------------------------------------
-// BookingSlot — the NO-OVERLAP concurrency primitive, staged for tomorrow.
-//
-// This table is empty scaffolding on purpose. It exists so that the day the real problem needs
-// "this resource cannot be double-booked for overlapping times" (a meeting room, a vehicle, a
-// restaurant table, a rentable asset), the rule is COPY-RENAME, not research.
-//
-// The `during` column is Unsupported("tsrange"): Prisma has no native range type, so we declare
-// it as an opaque database type. Prisma will CREATE the column but treats it as a black box —
-// it never reads or writes it, and (critically for the drift check) it does not try to "fix" it.
-//
-// The actual no-overlap guarantee is the EXCLUDE constraint, which Prisma CANNOT express at all.
-// That, plus the btree_gist extension it depends on and a partial-unique-index example, live in
-// the hand-written migration 002_concurrency_primitives. See that file for the full commentary.
-// ---------------------------------------------------------------------------
-model BookingSlot {
-  id         String                   @id @default(uuid()) @db.Uuid
-  resourceId String                   @db.Uuid
-  // The time range being reserved. Unsupported => Prisma stores/returns it as an opaque string
-  // if ever selected; real reads/writes of this column use raw SQL (tsrange('...','...')).
-  during     Unsupported("tsrange")
-  createdAt  DateTime                 @default(now())
-
-  @@index([resourceId])
-  @@map("booking_slot")
 }
