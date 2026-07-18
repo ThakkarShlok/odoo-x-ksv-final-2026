@@ -1,0 +1,165 @@
+// Zenith ERP — core schema.
+//
+// SCOPE: this file is deliberately domain-neutral. `Item` is a placeholder entity that
+// exists to prove the pipe and host the pattern examples. Tomorrow it is RENAMED to the
+// real domain entity (Asset / Vehicle / Table / PurchaseOrder / Room). User, Notification
+// and ActivityLog are infrastructure and survive that rename untouched.
+//
+// MIGRATION LAYOUT (two migrations, on purpose):
+//   001_init                   — everything Prisma can express. Generated, never hand-edited.
+//   002_concurrency_primitives — everything Prisma CANNOT express (partial unique index,
+//                                btree_gist, EXCLUDE constraint). Hand-written SQL.
+// Keeping them separate means a reviewer can see exactly where we stopped trusting the ORM
+// and reached for raw DDL, instead of that being buried inside a generated file.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // No `directUrl`. That field exists to let migrations bypass a connection pooler
+  // (PgBouncer/Neon) that cannot run DDL in transaction-pooling mode. We connect
+  // straight to a local postgres over TCP, so there is no pooled/direct split to declare.
+}
+
+// ---------------------------------------------------------------------------
+// Enums — the type system is the first line of defence.
+// A status is never a free-form string. Illegal values are rejected by Postgres
+// itself, not by a forgotten `if` in a controller.
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum ItemStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// ---------------------------------------------------------------------------
+// User — authentication + the single source of authorization truth.
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  name         String
+  // Role is stored server-side and NEVER accepted from a registration payload.
+  // Self-selected roles are privilege escalation with extra steps.
+  role         Role     @default(EMPLOYEE)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  items         Item[]
+  notifications Notification[]
+  activityLogs  ActivityLog[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Item — the throwaway domain entity. Rename me tomorrow.
+// ---------------------------------------------------------------------------
+
+model Item {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  status    ItemStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Ownership column. Today it only records who created the row; tomorrow it is what
+  // requireOwnershipOr(...) scopes queries by, so a non-admin cannot read another
+  // user's records by guessing a UUID. See src/middleware/requireRole.js.
+  createdById String @db.Uuid
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  // Composite index, not two single-column indexes. The list endpoint's access pattern is
+  // "filter by status, order by createdAt desc" — Postgres can satisfy both the WHERE and
+  // the ORDER BY from this one index. Column order matters: equality column first,
+  // range/sort column second.
+  @@index([status, createdAt])
+  @@index([createdById])
+  @@map("items")
+}
+
+// ---------------------------------------------------------------------------
+// Notification — PERSISTENT, user-addressed, survives reload.
+// Deliberately distinct from react-hot-toast, which is transient UI feedback that
+// dies on refresh. Both exist because they answer different questions:
+// toast = "did my click work?"  notification = "what happened while I was away?"
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       String
+  message    String
+  // Loose pointer ("item:<uuid>") rather than a FK. A notification must outlive the row it
+  // describes — a hard FK would either block deletes or cascade away the audit trail.
+  entityRef  String?
+  readStatus Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  // Serves the bell's hot query: unread-for-this-user, newest first.
+  @@index([userId, readStatus, createdAt])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// ActivityLog — append-only audit trail. No update/delete paths exist in code.
+// ---------------------------------------------------------------------------
+
+model ActivityLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  // Nullable: system-generated events have no human actor. Also means deleting a user
+  // must not erase the record that they acted — SetNull, never Cascade.
+  userId     String?  @db.Uuid
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  // JSONB, not JSON: binary storage, and it is the only variant Postgres can index.
+  // Schemaless on purpose — every domain logs a different payload shape, and we are not
+  // migrating this table at 3am tomorrow.
+  metadata   Json?    @db.JsonB
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ---------------------------------------------------------------------------
+// BookingSlot — the NO-OVERLAP concurrency primitive, staged for tomorrow.
+//
+// This table is empty scaffolding on purpose. It exists so that the day the real problem needs
+// "this resource cannot be double-booked for overlapping times" (a meeting room, a vehicle, a
+// restaurant table, a rentable asset), the rule is COPY-RENAME, not research.
+//
+// The `during` column is Unsupported("tsrange"): Prisma has no native range type, so we declare
+// it as an opaque database type. Prisma will CREATE the column but treats it as a black box —
+// it never reads or writes it, and (critically for the drift check) it does not try to "fix" it.
+//
+// The actual no-overlap guarantee is the EXCLUDE constraint, which Prisma CANNOT express at all.
+// That, plus the btree_gist extension it depends on and a partial-unique-index example, live in
+// the hand-written migration 002_concurrency_primitives. See that file for the full commentary.
+// ---------------------------------------------------------------------------
+model BookingSlot {
+  id         String                   @id @default(uuid()) @db.Uuid
+  resourceId String                   @db.Uuid
+  // The time range being reserved. Unsupported => Prisma stores/returns it as an opaque string
+  // if ever selected; real reads/writes of this column use raw SQL (tsrange('...','...')).
+  during     Unsupported("tsrange")
+  createdAt  DateTime                 @default(now())
+
+  @@index([resourceId])
+  @@map("booking_slot")
+}
