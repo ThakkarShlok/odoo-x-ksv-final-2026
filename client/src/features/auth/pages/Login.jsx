@@ -16,7 +16,7 @@ export default function Login() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
 
-  const redirectTo = location.state?.from?.pathname ?? '/app';
+  const cameFrom = location.state?.from?.pathname;
 
   const {
     register,
@@ -39,8 +39,11 @@ export default function Login() {
   async function onSubmit(values) {
     try {
       const user = await login(values);
-      toast.success(`Welcome back, ${user.name}.`);
-      navigate(redirectTo, { replace: true });
+      toast.success(`Welcome back, ${user.fullName}.`);
+      // Role-aware landing: admins to the ops dashboard, customers to the catalogue. If they were
+      // deep-linked to a protected page, honour that instead.
+      const home = user.role === 'ADMIN' ? '/app/admin' : '/app';
+      navigate(cameFrom ?? home, { replace: true });
     } catch (error) {
       toast.error(getErrorMessage(error, 'Login failed.'));
     }

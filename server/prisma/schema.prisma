@@ -257,12 +257,44 @@ model Product {
   units          ProductUnit[]
   pricelistItems PricelistItem[]
   orderLines     RentalOrderLine[]
+  images         ProductImage[]
 
   // Product browse by category. Query shape:
   //   SELECT ... FROM products WHERE categoryId = $1 AND isRentable ORDER BY name;
   // categoryId (equality) leftmost, isRentable narrows, name for the sort/scan.
   @@index([categoryId, isRentable])
   @@map("products")
+}
+
+// ProductImage — an image OF a product (phase-1 catalogue depth). This is a TABLE, not an
+// `imageUrl` column on Product, ON PURPOSE:
+//   - a product has 0..N images (a gallery), which is a genuine one-to-many; a single column can
+//     only ever hold one and forces a schema change the moment a second image is wanted.
+//   - ordering (sortOrder) and "which one is the card thumbnail" (isPrimary) are per-image
+//     attributes with their own values — they belong on the image row, not smeared across product
+//     columns.
+//   - it keeps Product's row narrow and lets images be added/removed/reordered without rewriting
+//     the product, mirroring how the schema already splits units/pricelist-items into their own
+//     tables rather than denormalizing onto the parent.
+// We store only the PATH under /uploads (e.g. "products/<uuid>.jpg" or "seed/<slug>.svg"), never
+// the binary — the bytes live on disk (multer) and are served statically. onDelete Cascade: images
+// are genuinely-owned children of the product (like order lines are of an order); deleting a
+// product deletes its images. (Product itself is Restrict-referenced by units/orderLines, so it is
+// only deletable while it has no rental history — the same "disposable until money attaches" rule.)
+// "At most one primary image per product" is a PARTIAL UNIQUE INDEX in the hand-written migration
+// (Prisma cannot express a filtered unique index — same reason as pricelists_one_default in 004).
+model ProductImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @db.Uuid
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  path      String // relative path under /uploads; the bytes live on disk, not in the DB
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  // Gallery read: all images for a product in display order (product detail page).
+  @@index([productId, sortOrder])
+  @@map("product_images")
 }
 
 // ProductUnit — one physical copy. Carries the serial/asset tag and the per-unit availability
@@ -387,6 +419,14 @@ model RentalOrder {
   updatedAt   DateTime  @updatedAt
   confirmedAt DateTime?
   cancelledAt DateTime?
+
+  // Return tracking (migration 005). Nullable: only set once the unit is scanned back in.
+  // actualReturnTime is the observed return instant the late-fee math compares against rentalEnd;
+  // totalPenalties is the running penalty total for the order, Decimal(12,2) like all money here.
+  // These are convenience denormalizations of the return event / late-fee rows the return-scan
+  // controller writes; the authoritative records remain RentalEvent(RETURN) and LateFee.
+  actualReturnTime DateTime?
+  totalPenalties   Decimal?  @db.Decimal(12, 2)
 
   lines         RentalOrderLine[]
   reservations  Reservation[]

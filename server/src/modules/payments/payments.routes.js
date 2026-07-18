@@ -3,20 +3,27 @@ import { authMiddleware } from '../../middleware/auth.js';
 import { requireRole } from '../../middleware/requireRole.js';
 import { validate } from '../../middleware/validate.js';
 import {
-  authorizeRules,
+  createOrderRules,
+  verifyRules,
   chargeRules,
   listPaymentsRules,
 } from './payments.validators.js';
 import {
-  authorizePayment,
+  createPaymentOrder,
+  verifyPayment,
   chargePenalty,
   listPayments,
 } from './payments.controller.js';
 
 const router = Router();
 
-// Submits checkout funds authorization
-router.post('/authorize', authMiddleware, authorizeRules, validate, authorizePayment);
+// Create a Razorpay order for rental total + deposit. The browser may open Checkout only with the
+// returned order id and public key; it never sees the secret.
+router.post('/create-order', authMiddleware, createOrderRules, validate, createPaymentOrder);
+
+// Verify Razorpay's HMAC signature server-side before any business state changes. This is the
+// trust boundary: client-reported "success" is not enough.
+router.post('/verify', authMiddleware, verifyRules, validate, verifyPayment);
 
 // Charge outstanding penalty invoices (admin-only)
 router.post('/:orderId/charge-penalty', authMiddleware, requireRole('ADMIN'), chargeRules, validate, chargePenalty);

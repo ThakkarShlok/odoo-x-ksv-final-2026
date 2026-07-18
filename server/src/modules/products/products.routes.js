@@ -17,6 +17,19 @@ import {
 
 const router = Router();
 
+// DEPRECATION SIGNAL — emitted on every response from this router. `Deprecation` (RFC 8594) marks
+// the endpoint as deprecated; `Link rel="successor-version"` points at what replaced it; `Sunset`
+// advertises when it may be removed. A reviewer (or a client author) sees the reasoning in the
+// response headers, not just by reading the controller. See products.controller.js header for why
+// it is still mounted at all.
+router.use((_req, res, next) => {
+  res.set('Deprecation', 'true');
+  res.set('Link', '</api/admin>; rel="successor-version", </api/catalog>; rel="successor-version"');
+  res.set('Sunset', 'Sat, 01 Nov 2026 00:00:00 GMT');
+  res.set('Warning', '299 - "Deprecated API: use /api/admin (management) and /api/catalog (storefront)."');
+  next();
+});
+
 // Publicly browse catalog categories
 router.get('/', listCategoriesRules, validate, listCategories);
 

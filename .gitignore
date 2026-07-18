@@ -12,6 +12,12 @@ dist/
 build/
 client/dist/
 
+# Uploaded & seed-generated images — the BYTES are never tracked: uploaded files are user data,
+# and seed images are regenerated deterministically by `npm run db:seed`. Only the .gitkeep is
+# tracked so the directory exists on a fresh clone (multer requires the destination to exist).
+server/uploads/*
+!server/uploads/.gitkeep
+
 # Logs
 logs/
 *.log
@@ -35,5 +41,5 @@ Desktop.ini
 #   server/prisma/schema.prisma  — the schema is the source of truth
 #   server/prisma/migrations/    — migration history must be shared or the team diverges
 #   docs/                        — the frozen API contract lives here
-
-*.md
+#   *.md                         — README, docs/*.md, schema-decisions are review artifacts;
+#                                  never ignore them (a `*.md` ignore was removed on purpose)

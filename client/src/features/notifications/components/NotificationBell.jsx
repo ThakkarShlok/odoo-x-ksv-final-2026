@@ -1,3 +1,9 @@
+/**
+ * Persistent notification bell — wired to the REAL backend response shape (verified live):
+ *   item = { id, type, channel, status: 'SENT'|'READ', sentAt }   (no `message`/`createdAt`)
+ * The teammate's controller dropped the human message, so we render a humanized `type` as the
+ * label. Unread count comes from meta.unreadCount. Polls every 30s; optimistic mark-read.
+ */
 import { useCallback, useEffect, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -5,7 +11,6 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
@@ -17,6 +22,14 @@ import {
 
 const POLL_MS = 30_000;
 
+function humanizeType(t) {
+  if (!t) return 'Notification';
+  return t
+    .toLowerCase()
+    .replace(/[._]/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function NotificationBell() {
   const [items, setItems] = useState([]);
   const [unread, setUnread] = useState(0);
@@ -24,10 +37,10 @@ export function NotificationBell() {
   const load = useCallback(async () => {
     try {
       const { data, meta } = await fetchNotifications();
-      setItems(data);
+      setItems(Array.isArray(data) ? data : []);
       setUnread(meta?.unreadCount ?? 0);
     } catch {
-      // transient failure: do not break the whole app chrome
+      // transient failure: keep last state, next poll recovers
     }
   }, []);
 
@@ -39,7 +52,7 @@ export function NotificationBell() {
 
   async function onMarkOne(id) {
     setUnread((n) => Math.max(0, n - 1));
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, readStatus: true } : it)));
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: 'READ' } : it)));
     try {
       await markNotificationRead(id);
     } finally {
@@ -49,7 +62,7 @@ export function NotificationBell() {
 
   async function onMarkAll() {
     setUnread(0);
-    setItems((prev) => prev.map((it) => ({ ...it, readStatus: true })));
+    setItems((prev) => prev.map((it) => ({ ...it, status: 'READ' })));
     try {
       await markAllNotificationsRead();
     } finally {
@@ -90,28 +103,32 @@ export function NotificationBell() {
         {items.length === 0 ? (
           <p className="px-2 py-6 text-center text-sm text-muted-foreground">You're all caught up.</p>
         ) : (
-          items.slice(0, 8).map((n) => (
-            <DropdownMenuItem
-              key={n.id}
-              onSelect={(e) => {
-                e.preventDefault();
-                if (!n.readStatus) onMarkOne(n.id);
-              }}
-            >
-              <span
-                className={`mt-1 h-2 w-2 shrink-0 rounded-full ${n.readStatus ? 'bg-transparent' : 'bg-accent'}`}
-                aria-hidden="true"
-              />
-              <span className="flex flex-col gap-0.5">
-                <span className={n.readStatus ? 'text-muted-foreground' : 'font-medium text-foreground'}>
-                  {n.message}
+          items.slice(0, 8).map((n) => {
+            const read = n.status === 'READ';
+            return (
+              <button
+                key={n.id}
+                type="button"
+                onClick={() => !read && onMarkOne(n.id)}
+                className="flex w-full items-start gap-2 rounded-sm px-2 py-2 text-left text-sm transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span
+                  className={`mt-1 h-2 w-2 shrink-0 rounded-full ${read ? 'bg-transparent' : 'bg-accent'}`}
+                  aria-hidden="true"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className={read ? 'text-muted-foreground' : 'font-medium text-foreground'}>
+                    {humanizeType(n.type)}
+                  </span>
+                  {n.sentAt ? (
+                    <span className="text-xs text-muted-foreground">
+                      {formatDistanceToNow(new Date(n.sentAt), { addSuffix: true })}
+                    </span>
+                  ) : null}
                 </span>
-                <span className="text-xs text-muted-foreground">
-                  {formatDistanceToNow(new Date(n.createdAt), { addSuffix: true })}
-                </span>
-              </span>
-            </DropdownMenuItem>
-          ))
+              </button>
+            );
+          })
         )}
       </DropdownMenuContent>
     </DropdownMenu>

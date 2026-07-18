@@ -1,3 +1,9 @@
+/**
+ * Register page — fields mirror the REAL backend contract: fullName, email, password (min 8),
+ * phoneNumber, address (all required server-side). New accounts are always CUSTOMER. Backend
+ * validation (422) is surfaced inline per-field; the frontend rules mirror it as a UX nicety.
+ * On success AuthContext registers-then-logs-in, so the user lands authenticated.
+ */
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -19,19 +25,17 @@ export default function Register() {
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm({ defaultValues: { name: '', email: '', password: '' } });
+  } = useForm({ defaultValues: { fullName: '', email: '', password: '', phoneNumber: '', address: '' } });
 
   async function onSubmit(values) {
     try {
       const user = await registerUser(values);
-      toast.success(`Account created. Welcome, ${user.name}.`);
-      navigate('/app', { replace: true });
+      toast.success(`Account created. Welcome, ${user.fullName}.`);
+      navigate('/app', { replace: true }); // customers land on the catalogue
     } catch (error) {
       const fieldErrors = getFieldErrors(error);
       if (fieldErrors.length) {
-        fieldErrors.forEach((fe) => {
-          setError(fe.field, { message: fe.message });
-        });
+        fieldErrors.forEach((fe) => setError(fe.field, { message: fe.message }));
       } else {
         toast.error(getErrorMessage(error, 'Registration failed.'));
       }
@@ -43,19 +47,19 @@ export default function Register() {
       <Card>
         <CardHeader>
           <CardTitle>Create your account</CardTitle>
-          <CardDescription>You'll start with an Employee role.</CardDescription>
+          <CardDescription>Rent equipment in minutes. You'll start as a customer.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
             <div className="space-y-1.5">
-              <Label htmlFor="name">Name</Label>
+              <Label htmlFor="fullName">Full name</Label>
               <Input
-                id="name"
+                id="fullName"
                 autoComplete="name"
-                aria-invalid={Boolean(errors.name)}
-                {...register('name', { required: 'Name is required.' })}
+                aria-invalid={Boolean(errors.fullName)}
+                {...register('fullName', { required: 'Full name is required.' })}
               />
-              {errors.name ? <p className="text-xs text-destructive">{errors.name.message}</p> : null}
+              {errors.fullName ? <p className="text-xs text-destructive">{errors.fullName.message}</p> : null}
             </div>
 
             <div className="space-y-1.5">
@@ -71,6 +75,28 @@ export default function Register() {
                 })}
               />
               {errors.email ? <p className="text-xs text-destructive">{errors.email.message}</p> : null}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="phoneNumber">Phone number</Label>
+              <Input
+                id="phoneNumber"
+                autoComplete="tel"
+                aria-invalid={Boolean(errors.phoneNumber)}
+                {...register('phoneNumber', { required: 'Phone number is required.' })}
+              />
+              {errors.phoneNumber ? <p className="text-xs text-destructive">{errors.phoneNumber.message}</p> : null}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="address">Address</Label>
+              <Input
+                id="address"
+                autoComplete="street-address"
+                aria-invalid={Boolean(errors.address)}
+                {...register('address', { required: 'Address is required.' })}
+              />
+              {errors.address ? <p className="text-xs text-destructive">{errors.address.message}</p> : null}
             </div>
 
             <div className="space-y-1.5">

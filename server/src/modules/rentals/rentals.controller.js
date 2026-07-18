@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { prisma } from '../../config/prisma.js';
-import { ok, fail } from '../../lib/apiResponse.js';
+import { ok, fail, AppError } from '../../lib/apiResponse.js';
 import { logActivity } from '../../lib/activityLog.js';
 
 function pad(n) {
@@ -84,9 +84,26 @@ export async function createQuotation(req, res) {
     return fail(res, { status: 400, message: 'customerId is required for storefront quotations.' });
   }
 
-  // Fetch settings and pricelist
+  // Fetch settings and pricelist.
   const settings = await prisma.rentalSettings.findFirst({ where: { isActive: true } });
-  const pricelist = await prisma.pricelist.findFirst({ where: { isDefault: true } });
+
+  // NULL-GUARD (latent-bug fix). Previously this read ONLY `{ isDefault: true }` and then used
+  // `pricelist.id` with no null check. Failure mode: the moment a store has no default pricelist —
+  // which becomes reachable now that admins can create pricelists via /api/admin without flagging
+  // one default — `pricelist` is null and `pricelist.id` throws a TypeError, surfacing as a generic
+  // 500 with no useful message to the customer mid-checkout. Guard: resolve default → first active
+  // (mirroring catalog.controller's defaultPricelistId so pricing and availability agree on the same
+  // list), and if there is genuinely no usable pricelist, fail with a clean, explained 422 instead
+  // of a 500. The seed always creates a default, so the happy path is unchanged.
+  const pricelist =
+    (await prisma.pricelist.findFirst({ where: { isDefault: true } })) ??
+    (await prisma.pricelist.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'asc' } }));
+  if (!pricelist) {
+    return fail(res, {
+      status: 422,
+      message: 'No active pricelist is configured. An administrator must create one before quotations can be priced.',
+    });
+  }
 
   const durationMs = end.getTime() - start.getTime();
   const durationDays = Math.ceil(durationMs / (24 * 60 * 60 * 1000));
@@ -106,11 +123,15 @@ export async function createQuotation(req, res) {
       });
 
       if (!unit) {
-        throw new Error(`Asset not found: ${item.assetId}`);
+        // AppError (not a bare Error) so the central handler returns a clean status instead of a
+        // 500 with a stack. See lib/apiResponse.js + middleware/errorHandler.js.
+        throw new AppError(`Asset not found: ${item.assetId}`, 404);
       }
 
       if (unit.status !== 'AVAILABLE') {
-        throw new Error(`Asset ${unit.serialNumber} is not available.`);
+        // Race guard: availability now only offers AVAILABLE units, but if one is taken between
+        // the check and here, return 409 (the client re-checks) rather than a 500.
+        throw new AppError(`${unit.serialNumber} is no longer available for these dates.`, 409);
       }
 
       // Check rates from pricelist
@@ -219,10 +240,10 @@ export async function handoverPickup(req, res) {
     return fail(res, { status: 404, message: 'Order not found.' });
   }
 
-  // In schema.prisma, pickup starts from CONFIRMED. In api.md it checks status is AUTHORIZED
-  // Let's accept CONFIRMED or QUOTATION (if bypass payments)
-  if (order.status !== 'CONFIRMED' && order.status !== 'QUOTATION') {
-    return fail(res, { status: 400, message: 'Order status is not valid for pickup.' });
+  // Pickup is allowed only after verified payment confirmation. A quotation must never reach
+  // handover just because the client claims checkout succeeded.
+  if (order.status !== 'CONFIRMED') {
+    return fail(res, { status: 400, message: 'Only confirmed orders can be handed over.' });
   }
 
   const orderBarcodes = order.lines.map((l) => l.productUnit.serialNumber);
@@ -245,9 +266,10 @@ export async function handoverPickup(req, res) {
         data: { status: 'RENTED' },
       });
 
-      // Update reservation status to ACTIVE
+      // Reservation is already ACTIVE from verified payment confirmation; keep the operation
+      // idempotent if a historical row is still HELD.
       await tx.reservation.updateMany({
-        where: { orderId: id, productUnitId: line.productUnitId },
+        where: { orderId: id, productUnitId: line.productUnitId, status: 'HELD' },
         data: { status: 'ACTIVE' },
       });
     }
@@ -263,15 +285,6 @@ export async function handoverPickup(req, res) {
       },
     });
 
-    // Record Deposit Ledger hold capture
-    await tx.depositLedger.create({
-      data: {
-        orderId: id,
-        entryType: 'HELD',
-        amount: order.depositTotal,
-        reason: 'Security deposit held on pickup',
-      },
-    });
   });
 
   logActivity({

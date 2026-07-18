@@ -12,9 +12,8 @@ const FEATURES = [
 ];
 
 const ROLES = [
-  { role: 'Admin', can: 'Full access, user promotion, all records.' },
-  { role: 'Manager', can: 'Team-level operations and reports (stubbed for your domain).' },
-  { role: 'Employee', can: 'Create and manage their own records.' },
+  { role: 'Admin', can: 'Manages catalogue, pricing, pickups/returns, deposit settlement, and the operations dashboard.' },
+  { role: 'Customer', can: 'Browses equipment, rents for a date range, pays deposit, and tracks orders.' },
 ];
 
 export default function Landing() {

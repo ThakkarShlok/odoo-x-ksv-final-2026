@@ -31,6 +31,8 @@ if (process.env.NODE_ENV === 'production' && process.env.JWT_SECRET === 'replace
 export const env = {
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET,
+  razorpayKeyId: process.env.RAZORPAY_KEY_ID?.trim() || '',
+  razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET?.trim() || '',
   port: Number(process.env.PORT ?? 5000),
   nodeEnv: process.env.NODE_ENV ?? 'development',
   clientOrigin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173',

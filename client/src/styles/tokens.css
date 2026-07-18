@@ -1,68 +1,80 @@
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.52 0.105 223.128);
-  --primary-foreground: oklch(0.984 0.019 200.873);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.52 0.105 223.128);
-  --accent-foreground: oklch(0.984 0.019 200.873);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.865 0.127 207.078);
-  --chart-2: oklch(0.715 0.143 215.221);
-  --chart-3: oklch(0.609 0.126 221.723);
-  --chart-4: oklch(0.52 0.105 223.128);
-  --chart-5: oklch(0.45 0.085 224.283);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.609 0.126 221.723);
-  --sidebar-primary-foreground: oklch(0.984 0.019 200.873);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+/**
+ * SINGLE SOURCE OF PALETTE TRUTH — "Slate + Signal Amber".
+ *
+ * Direction: slate neutrals for a calm operations surface, one confident accent (Signal Amber)
+ * for primary actions, a supporting teal, and clear semantic status colours. Light-only by design
+ * (no dark block). Swap the values here to re-theme the entire app — nothing else hardcodes colour.
+ *
+ * FORMAT NOTE (load-bearing): index.css maps most tokens straight through
+ *   (--color-primary: var(--primary))  -> so those are FULL colours (hex here).
+ * But the status-* and brand-accent tokens are consumed WRAPPED as hsl(var(--x)) in index.css,
+ * so those MUST be bare "H S% L%" channels, not full colours. Mixing the two formats is
+ * intentional and required by the existing @theme mapping.
+ */
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.45 0.085 224.283);
-  --primary-foreground: oklch(0.984 0.019 200.873);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.45 0.085 224.283);
-  --accent-foreground: oklch(0.984 0.019 200.873);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.865 0.127 207.078);
-  --chart-2: oklch(0.715 0.143 215.221);
-  --chart-3: oklch(0.609 0.126 221.723);
-  --chart-4: oklch(0.52 0.105 223.128);
-  --chart-5: oklch(0.45 0.085 224.283);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.715 0.143 215.221);
-  --sidebar-primary-foreground: oklch(0.302 0.056 229.695);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+:root {
+  /* ---- Core surfaces & text (full colours) ---- */
+  --background: #f8fafc;            /* slate-50  — page */
+  --foreground: #0f172a;            /* slate-900 — ink */
+  --card: #ffffff;                  /* surface */
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+
+  /* ---- Primary = Signal Amber (the one confident accent) ---- */
+  --primary: #b45309;              /* amber-700 */
+  --primary-foreground: #ffffff;   /* white on amber-700 ≈ 4.7:1, passes AA */
+  --primary-hover: #92400e;        /* amber-800 */
+
+  /* ---- Secondary / muted (slate) ---- */
+  --secondary: #f1f5f9;            /* slate-100 */
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;     /* slate-500 — 4.6:1 on white */
+
+  /* ---- Supporting tone = teal ---- */
+  --accent: #0f766e;               /* teal-700 */
+  --accent-foreground: #ffffff;
+
+  /* ---- Danger ---- */
+  --destructive: #b91c1c;          /* red-700 */
+  --destructive-foreground: #ffffff;
+
+  /* ---- Lines & focus ---- */
+  --border: #e2e8f0;               /* slate-200 */
+  --input: #e2e8f0;
+  --ring: #b45309;                 /* amber focus ring */
+
+  --radius: 0.5rem;                /* tighter, operational */
+
+  /* ---- Charts (Recharts) — distinct, cohesive hues ---- */
+  --chart-1: #b45309;              /* amber */
+  --chart-2: #0f766e;              /* teal */
+  --chart-3: #15803d;              /* green */
+  --chart-4: #64748b;              /* slate */
+  --chart-5: #b91c1c;              /* red */
+
+  /* ---- Sidebar ---- */
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #b45309;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f1f5f9;
+  --sidebar-accent-foreground: #0f172a;
+  --sidebar-border: #e2e8f0;
+  --sidebar-ring: #b45309;
+
+  /* ---- Semantic status tokens (HSL CHANNELS — wrapped by hsl() in index.css) ---- */
+  --status-active: 142 72% 29%;      /* green-700 */
+  --status-active-bg: 138 76% 97%;   /* green-50 */
+  --status-inactive: 215 16% 47%;    /* slate-500 */
+  --status-inactive-bg: 210 40% 96%; /* slate-100 */
+  --status-warning: 26 90% 37%;      /* amber-700 */
+  --status-warning-bg: 48 100% 96%;  /* amber-50 */
+  --status-danger: 0 74% 42%;        /* red-700 */
+  --status-danger-bg: 0 86% 97%;     /* red-50 */
+
+  /* ---- Hero gradient stops (HSL CHANNELS — wrapped by hsl() in index.css) ---- */
+  --brand-accent: 26 90% 37%;        /* amber-700 */
+  --brand-accent-hover: 23 84% 31%;  /* amber-800 */
 }

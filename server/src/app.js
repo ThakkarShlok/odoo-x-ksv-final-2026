@@ -17,6 +17,7 @@ import { env } from './config/env.js';
 import { notFound } from './middleware/notFound.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authRateLimiter } from './middleware/rateLimit.js';
+import { UPLOADS_ROOT, UPLOADS_URL_PREFIX } from './lib/uploads.js';
 
 // Module routing imports
 import healthRoutes from './modules/health/health.routes.js';
@@ -25,6 +26,8 @@ import itemRoutes from './modules/items/items.routes.js';
 import notificationRoutes from './modules/notifications/notification.routes.js';
 
 import usersRoutes from './modules/users/users.routes.js';
+import catalogRoutes from './modules/catalog/catalog.routes.js';
+import adminRoutes from './modules/admin/admin.routes.js';
 import productsRoutes from './modules/products/products.routes.js';
 import inventoryRoutes from './modules/inventory/inventory.routes.js';
 import rentalsRoutes from './modules/rentals/rentals.routes.js';
@@ -50,6 +53,21 @@ export function createApp() {
 
   app.use(express.json({ limit: '100kb' }));
 
+  // ==================== STATIC UPLOADS ====================
+  // Product images live on local disk (server/uploads) and are served here — no external host, so
+  // the catalogue renders OFFLINE at the venue. CORP is set to cross-origin because the client
+  // (:5173) loads these images from the API origin (:5000); helmet's default same-origin CORP would
+  // otherwise block the <img> loads. This mount is public by design: catalogue images are shown
+  // pre-login, exactly like the public GET /api/catalog they belong to.
+  app.use(
+    UPLOADS_URL_PREFIX,
+    express.static(UPLOADS_ROOT, {
+      setHeaders: (res) => res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'),
+      fallthrough: true,
+      index: false,
+    })
+  );
+
   // ==================== BASE ROUTING MOUNTS ====================
   app.use('/api/health', healthRoutes);
   app.use('/api/auth', authRateLimiter, authRoutes);
@@ -57,6 +75,8 @@ export function createApp() {
   app.use('/api/notifications', notificationRoutes);
 
   app.use('/api/users', usersRoutes);
+  app.use('/api/catalog', catalogRoutes);
+  app.use('/api/admin', adminRoutes);
   app.use('/api/products', productsRoutes);
   app.use('/api/inventory', inventoryRoutes);
   app.use('/api/rentals', rentalsRoutes);
@@ -70,6 +90,8 @@ export function createApp() {
   app.use('/api/v1/health', healthRoutes);
   app.use('/api/v1/auth', authRateLimiter, authRoutes);
   app.use('/api/v1/users', usersRoutes);
+  app.use('/api/v1/catalog', catalogRoutes);
+  app.use('/api/v1/admin', adminRoutes);
   app.use('/api/v1/products', productsRoutes);
   app.use('/api/v1/inventory', inventoryRoutes);
   app.use('/api/v1/rentals', rentalsRoutes);

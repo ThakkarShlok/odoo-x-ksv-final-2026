@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
+import crypto from 'node:crypto';
+
+process.env.RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_key';
+process.env.RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'rzp_test_secret';
+
 import { createApp } from '../src/app.js';
 import { prisma } from '../src/config/prisma.js';
 import { signToken } from '../src/lib/jwt.js';
@@ -132,6 +137,7 @@ const agentToken = signToken(agentUser);
 describe('REST API Endpoints Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', vi.fn());
   });
 
   describe('GET /api/v1/users/profile', () => {
@@ -270,35 +276,139 @@ describe('REST API Endpoints Tests', () => {
     });
   });
 
-  describe('POST /api/v1/payments/authorize', () => {
-    it('charges payment methods and updates status to CONFIRMED', async () => {
+  describe('POST /api/v1/payments/create-order', () => {
+    it('creates a Razorpay order for a customer-owned quotation', async () => {
       prisma.rentalOrder.findUnique.mockResolvedValue({
         id: orderUuid,
         orderNumber: 'RO-2026-001',
+        customerId: customerUser.id,
         status: 'QUOTATION',
         total: 100.00,
         depositTotal: 20.00,
+        currency: 'INR',
+        customer: {
+          id: customerUser.id,
+          name: customerUser.name,
+          email: customerUser.email,
+        },
+        payments: [],
+        lines: [{ productUnitId: assetUuid }],
       });
-      prisma.payment.create.mockResolvedValue({
-        id: 'pay-1',
-        amount: 120.00,
-        purpose: 'RENTAL',
-        status: 'AUTHORIZED',
-        reference: 'ch_test123',
+      fetch.mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          id: 'order_rzp_123',
+          amount: 12000,
+          currency: 'INR',
+        }),
       });
 
       const res = await request(app)
-        .post('/api/v1/payments/authorize')
+        .post('/api/v1/payments/create-order')
         .set('Authorization', `Bearer ${customerToken}`)
         .send({
           orderId: orderUuid,
-          paymentMethodToken: 'tok_visa',
         });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.data.gatewayStatus).toBe('succeeded');
-      expect(res.body.data.orderStatus).toBe('AUTHORIZED');
+      expect(res.body.data.razorpayOrderId).toBe('order_rzp_123');
+      expect(res.body.data.amountPaise).toBe(12000);
+    });
+  });
+
+  describe('POST /api/v1/payments/verify', () => {
+    it('verifies the Razorpay signature and confirms the order atomically', async () => {
+      prisma.rentalOrder.findUnique.mockResolvedValue({
+        id: orderUuid,
+        orderNumber: 'RO-2026-001',
+        customerId: customerUser.id,
+        status: 'QUOTATION',
+        total: 100.00,
+        depositTotal: 20.00,
+        currency: 'INR',
+        customer: {
+          id: customerUser.id,
+          name: customerUser.name,
+          email: customerUser.email,
+        },
+        payments: [],
+        lines: [{ productUnitId: assetUuid }],
+      });
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.create
+        .mockResolvedValueOnce({
+          id: 'pay-rental-1',
+          amount: 100.00,
+          purpose: 'RENTAL',
+          status: 'CAPTURED',
+          reference: 'pay_rzp_123',
+        })
+        .mockResolvedValueOnce({
+          id: 'pay-deposit-1',
+          amount: 20.00,
+          purpose: 'DEPOSIT',
+          status: 'CAPTURED',
+          reference: 'pay_rzp_123',
+        });
+
+      const razorpayOrderId = 'order_rzp_123';
+      const razorpayPaymentId = 'pay_rzp_123';
+      const razorpaySignature = crypto
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+        .digest('hex');
+
+      const res = await request(app)
+        .post('/api/v1/payments/verify')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          orderId: orderUuid,
+          razorpayOrderId,
+          razorpayPaymentId,
+          razorpaySignature,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.orderStatus).toBe('CONFIRMED');
+      expect(prisma.depositLedger.create).toHaveBeenCalled();
+      expect(prisma.reservation.updateMany).toHaveBeenCalledWith({
+        where: { orderId: orderUuid, status: 'HELD' },
+        data: { status: 'ACTIVE' },
+      });
+    });
+
+    it('rejects a bad Razorpay signature', async () => {
+      prisma.rentalOrder.findUnique.mockResolvedValue({
+        id: orderUuid,
+        orderNumber: 'RO-2026-001',
+        customerId: customerUser.id,
+        status: 'QUOTATION',
+        total: 100.00,
+        depositTotal: 20.00,
+        currency: 'INR',
+        customer: {
+          id: customerUser.id,
+          name: customerUser.name,
+          email: customerUser.email,
+        },
+        payments: [],
+        lines: [{ productUnitId: assetUuid }],
+      });
+
+      const res = await request(app)
+        .post('/api/v1/payments/verify')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          orderId: orderUuid,
+          razorpayOrderId: 'order_rzp_123',
+          razorpayPaymentId: 'pay_rzp_123',
+          razorpaySignature: 'bad-signature',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
     });
   });
 
