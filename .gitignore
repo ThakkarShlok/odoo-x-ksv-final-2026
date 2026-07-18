@@ -35,3 +35,5 @@ Desktop.ini
 #   server/prisma/schema.prisma  — the schema is the source of truth
 #   server/prisma/migrations/    — migration history must be shared or the team diverges
 #   docs/                        — the frozen API contract lives here
+
+*.md

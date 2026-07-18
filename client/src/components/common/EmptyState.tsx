@@ -1,4 +1,4 @@
-import * as React from 'react';
+import type { ReactNode } from 'react';
 import { Inbox } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -10,7 +10,7 @@ export function EmptyState({
 }: {
   title?: string;
   message?: string;
-  action?: React.ReactNode;
+  action?: ReactNode;
   className?: string;
 }) {
   return (
