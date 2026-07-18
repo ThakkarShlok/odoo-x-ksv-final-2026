@@ -19,12 +19,12 @@ export default function Register() {
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm({ defaultValues: { name: '', email: '', password: '' } });
+  } = useForm({ defaultValues: { fullName: '', email: '', password: '', phoneNumber: '', address: '' } });
 
   async function onSubmit(values) {
     try {
       const user = await registerUser(values);
-      toast.success(`Account created. Welcome, ${user.name}.`);
+      toast.success(`Account created. Welcome, ${user.fullName || user.name}.`);
       navigate('/app', { replace: true });
     } catch (error) {
       const fieldErrors = getFieldErrors(error);
@@ -43,19 +43,19 @@ export default function Register() {
       <Card>
         <CardHeader>
           <CardTitle>Create your account</CardTitle>
-          <CardDescription>You'll start with an Employee role.</CardDescription>
+          <CardDescription>Odoo-inspired Rental Management System.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
             <div className="space-y-1.5">
-              <Label htmlFor="name">Name</Label>
+              <Label htmlFor="fullName">Full Name</Label>
               <Input
-                id="name"
+                id="fullName"
                 autoComplete="name"
-                aria-invalid={Boolean(errors.name)}
-                {...register('name', { required: 'Name is required.' })}
+                aria-invalid={Boolean(errors.fullName)}
+                {...register('fullName', { required: 'Full name is required.' })}
               />
-              {errors.name ? <p className="text-xs text-destructive">{errors.name.message}</p> : null}
+              {errors.fullName ? <p className="text-xs text-destructive">{errors.fullName.message}</p> : null}
             </div>
 
             <div className="space-y-1.5">
@@ -71,6 +71,18 @@ export default function Register() {
                 })}
               />
               {errors.email ? <p className="text-xs text-destructive">{errors.email.message}</p> : null}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="phoneNumber">Phone Number</Label>
+              <Input
+                id="phoneNumber"
+                type="tel"
+                placeholder="+919876543210"
+                aria-invalid={Boolean(errors.phoneNumber)}
+                {...register('phoneNumber', { required: 'Phone number is required.' })}
+              />
+              {errors.phoneNumber ? <p className="text-xs text-destructive">{errors.phoneNumber.message}</p> : null}
             </div>
 
             <div className="space-y-1.5">
@@ -90,6 +102,19 @@ export default function Register() {
               ) : (
                 <p className="text-xs text-muted-foreground">Minimum {PASSWORD_MIN} characters.</p>
               )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="address">Default Address</Label>
+              <textarea
+                id="address"
+                rows={2}
+                className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                placeholder="123 Main St, Ahmedabad, Gujarat"
+                {...register('address', { required: 'Default shipping address is required.' })}
+                aria-invalid={Boolean(errors.address)}
+              />
+              {errors.address ? <p className="text-xs text-destructive">{errors.address.message}</p> : null}
             </div>
 
             <Button type="submit" className="w-full" disabled={isSubmitting}>
