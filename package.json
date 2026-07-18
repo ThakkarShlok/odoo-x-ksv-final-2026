@@ -1,0 +1,24 @@
+{
+  "name": "zenith-erp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zenith ERP — full-stack boilerplate (React 19 + Express 5 + Prisma 6 + PostgreSQL 18)",
+  "scripts": {
+    "dev": "concurrently --names \"SERVER,CLIENT\" --prefix-colors \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "install:all": "npm install --prefix server && npm install --prefix client",
+    "build": "npm run build --prefix client",
+    "test": "npm run test --prefix server && npm run test --prefix client",
+    "db:generate": "npm run db:generate --prefix server",
+    "db:migrate": "npm run db:migrate --prefix server",
+    "db:seed": "npm run db:seed --prefix server",
+    "db:studio": "npm run db:studio --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

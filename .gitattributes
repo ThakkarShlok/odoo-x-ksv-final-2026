@@ -1,0 +1,10 @@
+# Normalize line endings to LF in the repository.
+# Without this, a Windows contributor's CRLF checkout makes every file they touch
+# look 100% rewritten in the diff, which destroys reviewable multi-contributor history.
+* text=auto eol=lf
+
+# Binary — never normalize.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Environment — real secrets never enter git.
+# .env.example IS tracked (see negation below) because it is the setup contract.
+.env
+.env.*
+!.env.example
+
+# Builds
+dist/
+build/
+client/dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Test / coverage
+coverage/
+.vitest/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Explicitly NOT ignored (documented so nobody "helpfully" adds them):
+#   server/prisma/schema.prisma  — the schema is the source of truth
+#   server/prisma/migrations/    — migration history must be shared or the team diverges
+#   docs/                        — the frozen API contract lives here
