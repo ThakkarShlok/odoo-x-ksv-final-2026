@@ -100,9 +100,29 @@ export const notificationService = {
 
   async notifyOrderPartiesOnce({ order, type, message, entityRef }, tx = prisma) {
     const recipientIds = await orderAudience(order, tx);
+    const targetEntityRef = entityRef ?? `order:${order.id}`;
 
-    // Trigger HTML emails asynchronously
-    triggerEmailsForParties(order, type, recipientIds, tx);
+    // Only email if the notification record does not exist yet for the customer.
+    // Since sendOrderNotificationEmail only sends to the customer (order.customerId),
+    // we only check if a notification already exists for the customer.
+    let shouldEmail = true;
+    if (order.customerId) {
+      const existingNotification = await tx.notification.findFirst({
+        where: {
+          userId: order.customerId,
+          type,
+          entityRef: targetEntityRef,
+        },
+      });
+      if (existingNotification) {
+        shouldEmail = false;
+      }
+    }
+
+    if (shouldEmail) {
+      // Trigger HTML emails asynchronously
+      triggerEmailsForParties(order, type, recipientIds, tx);
+    }
 
     return Promise.all(
       recipientIds.map((userId) =>
@@ -111,7 +131,7 @@ export const notificationService = {
             userId,
             type,
             message,
-            entityRef: entityRef ?? `order:${order.id}`,
+            entityRef: targetEntityRef,
           },
           tx
         )

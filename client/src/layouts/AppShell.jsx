@@ -4,26 +4,37 @@
  * data-driven and filtered by role; items marked `stub` render disabled ("soon") — they are wired
  * in build steps 2–3. Hiding a link is UX only; the route guards + API enforce real access.
  */
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Boxes, LayoutDashboard, PackageSearch, ClipboardList, Warehouse, Activity, LogOut, Package, TrendingUp } from 'lucide-react';
-import { useAuth } from '@/features/auth/context/AuthContext';
-import { NotificationBell } from '@/features/notifications/components/NotificationBell';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import {
+  Boxes,
+  LayoutDashboard,
+  PackageSearch,
+  ClipboardList,
+  Warehouse,
+  Activity,
+  LogOut,
+  Package,
+  TrendingUp,
+  CircleUser,
+} from "lucide-react";
+import { useAuth } from "@/features/auth/context/AuthContext";
+import { NotificationBell } from "@/features/notifications/components/NotificationBell";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const NAV = {
   ADMIN: [
-    { to: '/app/admin', label: 'Dashboard', icon: LayoutDashboard, end: true },
-    { to: '/app/products', label: 'Products', icon: Package },
-    { to: '/app/rentals', label: 'Rentals', icon: ClipboardList },
-    { to: '/app/inventory', label: 'Inventory', icon: Warehouse },
-    { to: '/app/profit-loss', label: 'Profit & Loss', icon: TrendingUp },
-    { to: '/app/status', label: 'System Status', icon: Activity },
+    { to: "/app/admin", label: "Dashboard", icon: LayoutDashboard, end: true },
+    { to: "/app/products", label: "Products", icon: Package },
+    { to: "/app/rentals", label: "Rentals", icon: ClipboardList },
+    { to: "/app/inventory", label: "Inventory", icon: Warehouse },
+    { to: "/app/profit-loss", label: "Profit & Loss", icon: TrendingUp },
+    { to: "/app/status", label: "System Status", icon: Activity },
   ],
   CUSTOMER: [
-    { to: '/app', label: 'Browse', icon: PackageSearch, end: true },
-    { to: '/app/orders', label: 'My Orders', icon: ClipboardList },
-    { to: '/app/status', label: 'System Status', icon: Activity },
+    { to: "/app", label: "Browse", icon: PackageSearch, end: true },
+    { to: "/app/orders", label: "My Orders", icon: ClipboardList },
+    { to: "/app/status", label: "System Status", icon: Activity },
   ],
 };
 
@@ -37,7 +48,7 @@ export function AppShell() {
 
   async function onLogout() {
     await logout();
-    navigate('/login', { replace: true });
+    navigate("/login", { replace: true });
   }
 
   return (
@@ -47,7 +58,6 @@ export function AppShell() {
           <Boxes className="h-6 w-6 text-primary" aria-hidden="true" />
           <span>Zenith Rentals</span>
         </div>
-
         <nav className="flex-1 space-y-1 p-3" aria-label="Primary">
           {items.map((item) => {
             const Icon = item.icon;
@@ -61,7 +71,9 @@ export function AppShell() {
                 >
                   <Icon className="h-4 w-4" aria-hidden="true" />
                   {item.label}
-                  <span className="ml-auto text-[0.65rem] uppercase tracking-wide">soon</span>
+                  <span className="ml-auto text-[0.65rem] uppercase tracking-wide">
+                    soon
+                  </span>
                 </span>
               );
             }
@@ -72,8 +84,10 @@ export function AppShell() {
                 end={item.end}
                 className={({ isActive }) =>
                   cn(
-                    'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                    isActive ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-secondary'
+                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "text-foreground hover:bg-secondary",
                   )
                 }
               >
@@ -83,11 +97,29 @@ export function AppShell() {
             );
           })}
         </nav>
-
-        <div className="border-t border-border p-3 text-xs text-muted-foreground">
+        {/* <div className="border-t border-border p-3 text-xs text-muted-foreground fixed bottom-0">
           Signed in as
-          <div className="mt-0.5 font-medium text-foreground">{user.fullName}</div>
+          <div className="mt-0.5 font-medium text-foreground">
+            {user.fullName}
+          </div>
           <div className="uppercase tracking-wide">{user.role}</div>
+        </div> */}
+        <div className="fixed w-60 bottom-0 border-t border-border p-3 text-xs text-primary">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full">
+              <CircleUser className="h-5 w-5 text-muted-foreground" />
+            </div>
+
+            <div>
+              <p className="text-[11px] text-muted-foreground">Signed in as</p>
+
+              <p className="font-medium text-foreground py-1">
+                {user.fullName}
+              </p>
+
+              <p className="uppercase tracking-wide">{user.role}</p>
+            </div>
+          </div>
         </div>
       </aside>
 
