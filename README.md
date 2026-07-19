@@ -1,234 +1,252 @@
-# Zenith ERP — Full-Stack Boilerplate
+# Zenith Rentals
 
-A clean, minimal, reviewer-defensible full-stack foundation for a 24-hour hackathon. It proves
-frontend ↔ backend ↔ local PostgreSQL end-to-end and ships eight reusable engineering-pattern
-skeletons ready to extend to **any** operational ERP domain (assets, fleet, ESG, POS,
-procurement, booking) by **renaming and adding — never deleting**.
+> A complete rental operations platform that enforces consistency in PostgreSQL, not application code.
 
-`Item` is a deliberate placeholder entity. It exists to prove the pipe and host the pattern
-examples; tomorrow it is renamed to the real domain entity.
+![React](https://img.shields.io/badge/React-19.2.7-blue?logo=react&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-8.1.1-646CFF?logo=vite&logoColor=white)
+![Node](https://img.shields.io/badge/Node.js-20.x-339933?logo=nodedotjs&logoColor=white)
+![Express](https://img.shields.io/badge/Express-5.0.1-000000?logo=express&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-6.3.1-2D3748?logo=prisma&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-latest-4169E1?logo=postgresql&logoColor=white)
+![Tailwind](https://img.shields.io/badge/Tailwind_CSS-4.3.3-38B2AC?logo=tailwindcss&logoColor=white)
 
----
+Rental businesses lose money in three specific places: they double-book items because availability is a time-range question tracked on spreadsheets; they calculate late fees inconsistently by hand; and they manage security deposits outside the rental workflow, making reconciliation guesswork. This system covers the complete lifecycle — quotation → payment + security deposit → handover → return → penalty → deposit settlement → closure — and enforces the rules that matter in the database rather than in application code.
 
-## Stack
+## The Problem
 
-| Layer | Technology |
-| --- | --- |
-| Frontend | React 19 + Vite 6, JavaScript, Tailwind CSS 3.4, shadcn/ui (Radix), React Router 7, axios, react-hook-form, react-hot-toast, lucide-react, date-fns. Recharts installed, unused. Vitest. |
-| Backend | Node 18+, Express 5, ES modules, Prisma 6, express-validator, jsonwebtoken, bcryptjs, helmet, cors, morgan, express-rate-limit, dotenv. PDFKit + Nodemailer installed, unused. Supertest + Vitest. |
-| Database | PostgreSQL 18, local. No hosted anything. No `directUrl` (local needs no pooler split). |
-| Repo | One repo, `/client` + `/server` + `/docs`, npm, root `concurrently` scripts. No Docker, no workspaces. |
+A rental operation is primarily a challenge of time and physical inventory. Double-booking happens when availability relies on spreadsheet lookups instead of hard constraints. Hand-calculated penalties drift based on which employee is working the return desk. Floating deposits tracked outside the financial ledger make reconciliation a guessing game. 
 
-## Architecture at a glance
+## Key Features
 
-```
-Browser ──axios(+Bearer)──▶ Express 5 ──Prisma 6──▶ PostgreSQL 18 (local)
-   ▲            │                  │
-   │            │                  ├─ authMiddleware → requireRole → ownership scope (3-layer RBAC)
-   │            │                  ├─ express-validator (whitelist / mass-assignment defence)
-   │            │                  ├─ withTransaction (atomic multi-write)
-   │            │                  ├─ state-machine guard (legal status transitions)
-   │            │                  ├─ notificationService + activityLog (persistent + audit)
-   │            │                  └─ DB constraints: EXCLUDE (no-overlap), partial unique index
-   └────────────┘  { success, message, data, meta } envelope on every response
-```
+### Customer
+- Browse catalogue with filters and sorting
+- Date-range availability checks for precise booking
+- Quotation generation
+- Payment with integrated security deposit
+- Order history tracking
 
-**Why `app.js` / `server.js` are separate:** `app.js` exports the Express app without binding a
-port, so Supertest drives it in-process. `server.js` owns the port and graceful shutdown.
+### Admin
+- Product, category, unit, and pricelist management with image uploads
+- Operations dashboard for upcoming pickups and returns
+- Handover and return inspection workflows
+- Deposit settlement and late-fee processing
 
-## Folder tree
+## Engineering Highlights
 
-```
-zenith-erp/
-├── client/                     React 19 + Vite SPA
-│   ├── src/
-│   │   ├── api/                axios instance (Bearer + auto-logout) + endpoint modules
-│   │   ├── components/ui/      shadcn primitives (source, not a dependency)
-│   │   ├── components/common/  StatusBadge, Loading, ErrorState, EmptyState, NotificationBell
-│   │   ├── context/            AuthContext (no Redux — Context is right-sized here)
-│   │   ├── layouts/            PublicLayout, AppShell (role-aware sidebar)
-│   │   ├── pages/              Landing, Login, Register, Items, SystemStatus, NotFound
-│   │   ├── routes/             ProtectedRoute
-│   │   └── styles/tokens.css   ← the entire palette. Swap here to re-theme in minutes.
-│   └── ...
-├── server/                     Express 5 + Prisma 6 API
-│   ├── prisma/
-│   │   ├── schema.prisma       User, Item, Notification, ActivityLog, BookingSlot + enums
-│   │   ├── migrations/         001_init (generated) + 002_concurrency_primitives (hand-written)
-│   │   └── seed.js             idempotent demo users + items
-│   └── src/
-│       ├── config/             env (boot-time validation), prisma (single client)
-│       ├── middleware/         auth, requireRole, validate, rateLimit, errorHandler, notFound
-│       ├── lib/                jwt, apiResponse, prismaErrors, withTransaction, activityLog
-│       └── modules/            auth, items, notifications, health
-└── docs/                       api-contract.md, hackathon-checklist.md, shadcn-setup.md
+This project makes deliberate technical choices to enforce consistency at the data layer, removing entire classes of bugs from the application logic.
+
+### No double-booking, enforced by PostgreSQL
+Availability checks in application code are inherently susceptible to Time-of-Check to Time-of-Use (TOCTOU) race conditions. Instead, Zenith Rentals uses a PostgreSQL `EXCLUDE` constraint with a `tsrange` to make overlapping reservations physically unrepresentable in the database. Concurrent conflicts fail instantly at the database level, raising `SQLSTATE 23P01` which the application translates to a 409 Conflict.
+
+```sql
+ALTER TABLE "reservations"
+  ADD CONSTRAINT "reservations_no_overlap"
+  EXCLUDE USING gist ("productUnitId" WITH =, "during" WITH &&)
+  WHERE (status IN ('HELD', 'ACTIVE', 'FULFILLED'));
 ```
 
----
+### Deposits as an append-only ledger
+Instead of a single mutable balance column that can drift out of sync, deposits are recorded as an append-only ledger of `HELD`, `DEDUCTED`, and `REFUNDED` entries. The current balance is derived by summation. A `BEFORE INSERT` database trigger locks the parent order and prevents any deduction or refund that would exceed the currently held balance, maintaining aggregate consistency without application-level races.
 
-## Windows setup
+### Temporal correctness
+Rates and late-fee rules are snapshotted onto transactional rows at the time they are applied (e.g., `RentalOrderLine.rateApplied` and `LateFee.capAmount`). This ensures that historical orders do not retroactively change their financial meaning when an admin edits a pricelist or store setting.
 
-Prerequisites: **Node 18+**, **npm**, **Git**, and **PostgreSQL 18 running locally**.
+### Atomic multi-step operations
+Complex workflows are wrapped in robust transactions. For example, confirmation (reserve + payment + deposit ledger) and return settlement (penalty + deduction + refund + release + close) run inside a `withTransaction` wrapper, ensuring all steps succeed or fail atomically.
 
-> On this machine `psql` is **not on PATH** — it lives at
-> `C:\PostgreSQL Download File\bin\psql.exe`. Quote the full path when you need it. You do not
-> need `psql` for normal development; Prisma talks to the DB directly.
-
-### 1. Local PostgreSQL preparation (one-time)
-
-The app connects as a role `zenith` to a database `transitops_dev`. If they don't exist yet,
-create them as a superuser (you'll be prompted for the `postgres` password):
-
-```powershell
-& "C:\PostgreSQL Download File\bin\psql.exe" -U postgres -h localhost -c "CREATE ROLE zenith LOGIN PASSWORD 'zenith_dev';"
-& "C:\PostgreSQL Download File\bin\psql.exe" -U postgres -h localhost -c "CREATE DATABASE transitops_dev OWNER zenith;"
+```javascript
+// server/src/lib/withTransaction.js
+export function withTransaction(callback) {
+  return prisma.$transaction(callback);
+}
 ```
 
-Prisma's `migrate dev` needs to create a temporary **shadow database** to detect drift, which
-requires the `CREATEDB` privilege on the role:
+### Three-layer RBAC
+Access control consists of three deliberate layers:
+1. **Authentication**: JWT verification confirms identity.
+2. **Role Check**: Middleware ensures the actor has the required role (e.g., `ADMIN`).
+3. **Row-level Scoping**: Controller queries inject `where` clauses based on ownership (IDOR defense).
 
-```powershell
-& "C:\PostgreSQL Download File\bin\psql.exe" -U postgres -h localhost -c "ALTER ROLE zenith CREATEDB;"
+### Money as Decimal(12,2)
+All monetary values are stored as exact base-10 `Decimal(12,2)`. Using floating point leads to binary rounding errors, and integer paise can lose scale contracts. Decimal(12,2) guarantees exact financial math.
+
+### Payment integrity
+Payment statuses are never updated based on client-reported success. The server performs an HMAC signature verification of the gateway payload (`crypto.createHmac`) before confirming any transaction and modifying the deposit ledger.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Browser[Browser] -->|axios Bearer| Middleware[Express Middleware Chain]
+    
+    subgraph Express[Node + Express]
+        Middleware --> Controller[Controllers]
+        Controller --> Service[Services / Business Logic]
+    end
+
+    Service --> Prisma[Prisma ORM]
+    Prisma --> PG[(PostgreSQL)]
+
+    subgraph CrossCutting[Cross-Cutting Layers]
+        RBAC[RBAC]
+        Validation[Validation]
+        Transaction[withTransaction wrapper]
+        State[State Machine]
+        Audit[Activity Log]
+        Notif[Notifications]
+        Constraints[DB Constraints / Triggers]
+    end
 ```
 
-> `CREATEDB` lets the role create/drop databases (the shadow DB, and a reset if you ever run
-> one). It is **not** superuser — it can't read other roles' data. It is the minimum privilege
-> `migrate dev` needs. See `docs/hackathon-checklist.md` and the drift note in migration 002.
+### Data Model Overview
+- **Master Data**: `User`, `Category`, `Product`, `ProductUnit`, `Pricelist` — The core entities and inventory.
+- **Transactional**: `RentalOrder`, `RentalOrderLine`, `Reservation`, `Payment`, `DepositLedger`, `Invoice`, `RentalEvent` — The operational history and financial lifecycle.
+- **Cross-Cutting**: `ActivityLog`, `Notification`, `RentalSettings` — System configuration and audit trails.
 
-### 2. Environment files
+## Tech Stack
 
-`.env` files hold secrets and are **gitignored**. Create them from the examples:
+| Layer | Technology | Why this choice |
+|-------|------------|-----------------|
+| **Database** | PostgreSQL | Native constraints, ranges, and EXCLUDE capabilities over MySQL. |
+| **ORM** | Prisma | Typesafe schema and client over raw SQL, with raw SQL escape hatches for advanced constraints. |
+| **Backend** | Node + Express | Fast iteration and extensive ecosystem. |
+| **Frontend** | React + Vite + Tailwind v4 | Performant component model and rapid utility-first styling. |
+| **Hosting** | Local DB over Hosted | Ensures offline operability, crucial for venue-based operational software. |
 
-```powershell
-Copy-Item server\.env.example server\.env
-Copy-Item client\.env.example client\.env
+
+## Getting Started
+
+### Prerequisites
+- Node.js (v20.x or higher recommended)
+- PostgreSQL (v14 or higher)
+
+### Database Setup
+Ensure PostgreSQL is running and create the user and database. Open `psql` and run:
+
+```sql
+CREATE ROLE zenith WITH LOGIN PASSWORD 'zenith';
+CREATE DATABASE zenith_dev OWNER zenith;
+-- Required for Prisma shadow database creations during migrations
+ALTER ROLE zenith CREATEDB;
 ```
 
-Generate a real JWT secret and paste it into `server\.env`:
+### Environment Setup
+Copy the example environment file and configure it if necessary:
 
-```powershell
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```bash
+cd server
+cp .env.example .env
 ```
 
-`server/.env` must have (at minimum):
-```
-DATABASE_URL="postgresql://zenith:zenith_dev@localhost:5432/transitops_dev"
-JWT_SECRET="<the generated hex string>"
-```
-The server **refuses to start** with a clear message if `DATABASE_URL` or `JWT_SECRET` is missing.
+### Install and Run
 
-### 3. Install
+```bash
+# Terminal 1: Server
+cd server
+npm install
+npm run db:generate
+npm run db:migrate
+npm run db:seed
+npm run dev
 
-```powershell
-npm run install:all      # installs server + client (no root node_modules bloat)
-```
-
-### 4. Database: generate, migrate, seed
-
-```powershell
-npm run db:generate      # prisma generate — build the typed client
-npm run db:migrate       # apply migrations 001 + 002 to transitops_dev
-npm run db:seed          # idempotent demo users + items (safe to re-run)
+# Terminal 2: Client
+cd client
+npm install
+npm run dev
 ```
 
-### 5. Run
+### Demo Credentials
 
-```powershell
-npm run dev              # both apps: API on :5000, client on :5173
-```
-
-Open **http://localhost:5173**, click a demo account on the landing page, log in.
-
----
-
-## Demo credentials (seeded)
+The following credentials are provided by the seed script:
 
 | Role | Email | Password |
-| --- | --- | --- |
-| ADMIN | `admin@zenith.dev` | `admin12345` |
-| EMPLOYEE | `employee@zenith.dev` | `employee12345` |
+|------|-------|----------|
+| **Admin** | `admin@zenith.dev` | `admin12345` |
+| **Customer** | `alice@zenith.dev` | `customer12345` |
+| **Customer** | `bob@zenith.dev` | `customer12345` |
 
-These are public, weak, committed demo logins — **not secrets**. They are defined once in
-`client/src/lib/demo-credentials.js` and must match `server/prisma/seed.js`.
+*(Note: The old `employee@zenith.dev` account has been removed.)*
 
----
+## API Overview
 
-## Scripts
+<details>
+<summary>Click to expand key API endpoints</summary>
 
-**Root**
-| Script | Does |
-| --- | --- |
-| `npm run dev` | Both apps via concurrently |
-| `npm run dev:server` / `dev:client` | One app |
-| `npm run install:all` | Install both |
-| `npm run build` | Build the client |
-| `npm run test` | Test both apps |
-| `npm run db:generate` / `db:migrate` / `db:seed` / `db:studio` | Prisma, proxied to server |
+### Auth
+- `POST /api/auth/login` — Public, Authenticate and receive JWT
+- `POST /api/auth/register` — Public, Create a new customer account
+- `POST /api/auth/refresh` — Public, Refresh JWT token
 
-**Prisma (server)** — `db:generate`, `db:migrate`, `db:seed`, `db:studio` (GUI at :5555).
+### Catalog
+- `GET /api/catalog` — Public, List categories and products with pricing
+- `GET /api/catalog/availability` — Public, Check product availability for a date range
 
----
+### Payments
+- `POST /api/payments/order` — Customer, Create a Razorpay order from a quotation
+- `POST /api/payments/verify` — Customer, Verify HMAC signature and confirm payment
+- `POST /api/payments/:orderId/penalty` — Admin, Settle outstanding late fees from deposit
 
-## API endpoints
+### Rentals
+- `POST /api/rentals` — Customer, Create a new rental quotation
+- `GET /api/rentals` — Authenticated, List order history (scoped to user)
 
-Full detail in **`docs/api-contract.md`**. Summary:
+*(Additional modules include inventory, products, inspections, reports, and admin management).*
+</details>
 
-- `GET /api/health`, `GET /api/health/database` — liveness + readiness (public).
-- `POST /api/auth/register|login`, `GET /api/auth/me`, `POST /api/auth/promote`.
-- `GET|POST /api/items`, `PATCH /api/items/:id/status` — Bearer-protected.
-- `GET /api/notifications`, `PATCH /api/notifications/:id/read`, `PATCH /api/notifications/read-all`.
+## Standard Response Envelope
 
-Every response uses `{ success, message, data, meta }` (or `{ success, message, errors }`).
+```json
+{
+  "success": true,
+  "data": { ... },
+  "message": "Optional message",
+  "meta": { "totalCount": 10, "page": 1, "limit": 10 }
+}
+```
 
----
+## Project Structure
 
-## Security notes (what a reviewer will ask about)
+<details>
+<summary>Click to expand folder tree</summary>
 
-- **3-layer RBAC** — authenticate (`auth.js`) → authorize by role (`requireRole.js`) → scope by
-  ownership (the IDOR-defence example in `requireRole.js`, ready to uncomment).
-- **Passwords** — bcrypt cost 10; never stored/returned in plaintext; `passwordHash` stripped
-  from every response by a single `toPublicUser()`.
-- **Backend password policy** — min 8 enforced server-side in `auth.validators.js`, not just in
-  the UI. A curl request that skips the form is still validated.
-- **Roles never self-selected** — `register` hardcodes EMPLOYEE; elevation only via ADMIN-gated
-  `promote`.
-- **Mass-assignment** — express-validator whitelists fields; controllers read only named fields.
-- **SQL injection** — Prisma parameterises all queries; raw health check uses a tagged template.
-- **User enumeration** — login returns one generic error and runs bcrypt even on missing users
-  (timing-safe).
-- **Rate limiting** — `express-rate-limit` on `/api/auth` only.
-- **Headers / CORS** — helmet; CORS locked to `CLIENT_ORIGIN`, not `*`.
-- **No secret leakage** — DB-health 503 never returns the connection string; error handler never
-  returns a stack trace in production.
-- **DB-enforced invariants** — `EXCLUDE USING gist` prevents booking overlaps atomically (maps to
-  409); a partial unique index enforces conditional uniqueness. Rules live in the database, not
-  in raceable app code.
+```text
+odoo-x-ksv-final-2026/
+├── client/                     # React + Vite frontend
+│   ├── src/
+│   │   ├── components/         # Reusable UI components (shadcn)
+│   │   ├── features/           # Feature-sliced modules (admin, customer, auth)
+│   │   ├── styles/             # Global CSS and Tailwind tokens
+│   │   └── lib/                # API client and utilities
+├── server/                     # Express API backend
+│   ├── prisma/
+│   │   ├── migrations/         # Prisma and hand-written SQL migrations
+│   │   ├── schema.prisma       # Database schema and models
+│   │   └── seed.js             # Idempotent database seed script
+│   ├── src/
+│   │   ├── modules/            # Domain modules (auth, payments, rentals, etc.)
+│   │   ├── middleware/         # Express middleware (auth, RBAC, etc.)
+│   │   └── lib/                # Shared utilities (jwt, withTransaction, etc.)
+├── docs/                       # Architecture decisions and diagrams
+└── README.md                   # This file
+```
+</details>
 
----
+## Troubleshooting
 
-## Troubleshooting (Windows)
+| Issue | Cause / Solution |
+|-------|------------------|
+| **P3014 Shadow Database Error** | Prisma needs to create a shadow DB to run migrations safely. Run `ALTER ROLE zenith CREATEDB;` in postgres. |
+| **Prisma EPERM on locked engine** | Windows-specific issue where the Prisma engine is locked by another process. Stop the node server, kill hanging node processes, and retry. |
+| **curl vs curl.exe** | On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest`. Use `curl.exe` to test API endpoints. |
+| **Port Conflicts** | If port 5000 or 5173 is in use, kill the existing process or change the port in `.env` and `vite.config.js`. |
+| **Line Endings (CRLF vs LF)** | Git on Windows might convert line endings to CRLF, which can break shell scripts. Set `core.autocrlf` appropriately. |
 
-| Symptom | Cause / fix |
-| --- | --- |
-| Server exits: "Missing required environment variable(s)" | No `server/.env`, or `JWT_SECRET`/`DATABASE_URL` blank. Copy the example and fill it. |
-| `P3014 ... could not create the shadow database` | Role lacks `CREATEDB`. Run the `ALTER ROLE zenith CREATEDB;` command above. |
-| `prisma generate` fails with `EPERM` / file locked | A `node` dev server is holding the engine. Stop `npm run dev`, then generate. |
-| `curl` behaves oddly in PowerShell | PowerShell aliases `curl` to `Invoke-WebRequest`. Use `curl.exe`. |
-| Client hops to port 5174 then API calls fail | Vite is set `strictPort`; free 5173. A different port would fail CORS (`CLIENT_ORIGIN`). |
-| `warn ... package.json#prisma is deprecated` | Harmless in Prisma 6 (removed in 7). The seed config still works; left as-is intentionally. |
-| Whole files show as changed in a diff | Line endings. `.gitattributes` sets `eol=lf`; re-clone or renormalise. |
+## Roadmap
 
----
+- Implement short-lived token TTL with full refresh-token rotation
+- Complete AI integration for predictive maintenance tickets
+- Expand reporting dashboards with export functionality
 
-## Hackathon customization
+## Team & Acknowledgements
 
-Follow **`docs/hackathon-checklist.md`** in order. The short version: pick your entity and its
-one scoring rule, **rename** `Item` (schema + module + page), pick the matching DB primitive
-(EXCLUDE for no-overlap, partial unique index for conditional uniqueness), freeze the API
-contract, then split the work. Re-theme by editing `client/src/styles/tokens.css` only.
-
-## Git flow
-
-Feature branches → `dev`; only the team lead merges `dev` → `main`. Small, frequent commits from
-**all four members** — judges evaluate multi-contributor activity (`git shortlog -sn`). Never
-commit `.env`, `node_modules`, or `dist`.
+**Team Odoo Zenith**, built for the Odoo × KSV Hackathon 2026.
