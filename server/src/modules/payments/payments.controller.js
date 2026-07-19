@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma.js';
 import { ok, fail, AppError } from '../../lib/apiResponse.js';
 import { logActivity } from '../../lib/activityLog.js';
 import { withTransaction } from '../../lib/withTransaction.js';
+import { notificationService } from '../notifications/notification.service.js';
 
 function moneyToPaise(amount) {
   return Math.round(Number(amount) * 100);
@@ -108,18 +109,28 @@ async function finalizeVerifiedPayment({ order, razorpayPaymentId }) {
       });
     }
 
-    await tx.invoice.create({
-      data: {
-        orderId: order.id,
+      await tx.invoice.create({
+        data: {
+          orderId: order.id,
         invoiceNumber: `INV-2026-${order.orderNumber.split('-').slice(-1)}`,
         status: 'ISSUED',
         amount: totalAmount,
-        issuedAt: now,
-      },
-    });
+          issuedAt: now,
+        },
+      });
 
-    return { rentalPayment, depositPayment, totalAmount, confirmedAt: now };
-  });
+      await notificationService.notifyOrderParties(
+        {
+          order,
+          type: 'PAYMENT_CONFIRMED',
+          message: `Payment for order ${order.orderNumber} was verified and the booking is confirmed.`,
+          entityRef: `order:${order.id}`,
+        },
+        tx
+      );
+
+      return { rentalPayment, depositPayment, totalAmount, confirmedAt: now };
+    });
 }
 
 export async function createPaymentOrder(req, res) {

@@ -17,7 +17,7 @@ vi.mock('../src/config/prisma.js', () => {
         findUnique: vi.fn(),
         create: vi.fn(),
         update: vi.fn(),
-        findMany: vi.fn(),
+        findMany: vi.fn(() => Promise.resolve([])),
         count: vi.fn(),
         delete: vi.fn(),
       },
@@ -89,6 +89,7 @@ vi.mock('../src/config/prisma.js', () => {
       },
       activityLog: {
         create: vi.fn(),
+        findMany: vi.fn(),
       },
       notification: {
         findMany: vi.fn(),
@@ -482,6 +483,61 @@ describe('REST API Endpoints Tests', () => {
       expect(res.body.data.volumes.activeRentals).toBe(5);
       expect(res.body.data.financials.grossRevenue).toBe('500.00');
       expect(res.body.data.financials.securityDepositsHeld).toBe('150.00');
+    });
+  });
+
+  describe('GET /api/v1/reports/profit-loss', () => {
+    it('allows admin to query Profit and Loss reports and charts', async () => {
+      prisma.product.findMany.mockResolvedValue([
+        {
+          id: 'prod-1',
+          name: 'DSLR Camera',
+          sku: 'SKU-DSLR',
+          category: { name: 'Electronics' },
+          orderLines: [
+            {
+              lineSubtotal: 2400.00,
+              order: {
+                status: 'CLOSED',
+                subtotal: 2400.00,
+                payments: [{ status: 'CAPTURED', amount: 2400.00 }],
+              },
+              lateFees: [{ amount: 500.00 }]
+            }
+          ],
+          units: [{ id: 'unit-1', status: 'AVAILABLE', condition: 'GOOD' }]
+        }
+      ]);
+
+      prisma.activityLog.findMany.mockResolvedValue([
+        {
+          action: 'ai.maintenance_resolve',
+          entityType: 'ProductUnit',
+          entityId: 'unit-1',
+          metadata: { cost: '150.00' },
+          createdAt: new Date(),
+        }
+      ]);
+
+      prisma.productUnit.findMany.mockResolvedValue([
+        { id: 'unit-1', productId: 'prod-1', condition: 'GOOD', status: 'AVAILABLE' }
+      ]);
+
+      prisma.payment.findMany.mockResolvedValue([
+        { status: 'CAPTURED', amount: 2400.00, purpose: 'RENTAL', processedAt: new Date(), createdAt: new Date() }
+      ]);
+
+      prisma.depositLedger.findMany.mockResolvedValue([]);
+
+      const res = await request(app)
+        .get('/api/v1/reports/profit-loss')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.productProfitability).toBeDefined();
+      expect(res.body.data.noiTrend).toBeDefined();
+      expect(res.body.data.cashFlowTrend).toBeDefined();
     });
   });
 });

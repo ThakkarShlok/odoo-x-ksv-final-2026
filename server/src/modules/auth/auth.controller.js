@@ -5,6 +5,7 @@ import { prisma } from '../../config/prisma.js';
 import { env } from '../../config/env.js';
 import { ok, fail } from '../../lib/apiResponse.js';
 import { logActivity } from '../../lib/activityLog.js';
+import { mailService } from '../notifications/mail.service.js';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -87,6 +88,11 @@ export async function register(req, res) {
     entityType: 'User',
     entityId: user.id,
     metadata: { email: user.email },
+  });
+
+  // Send welcome email asynchronously
+  mailService.sendWelcomeEmail(user).catch((err) => {
+    console.error('[auth.register] Failed to send welcome email:', err);
   });
 
   return ok(res, {

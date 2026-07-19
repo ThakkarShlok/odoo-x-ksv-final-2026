@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../../config/prisma.js';
 import { ok, fail, AppError } from '../../lib/apiResponse.js';
 import { logActivity } from '../../lib/activityLog.js';
+import { notificationService } from '../notifications/notification.service.js';
 
 function pad(n) {
   return String(n).padStart(2, '0');
@@ -210,6 +211,16 @@ export async function createQuotation(req, res) {
       });
     }
 
+    await notificationService.notifyOrderParties(
+      {
+        order: newOrder,
+        type: 'QUOTATION_CREATED',
+        message: `Quotation ${newOrder.orderNumber} was created and is awaiting payment confirmation.`,
+        entityRef: `order:${newOrder.id}`,
+      },
+      tx
+    );
+
     return newOrder;
   });
 
@@ -275,17 +286,27 @@ export async function handoverPickup(req, res) {
     }
 
     // Record pickup event
-    await tx.rentalEvent.create({
-      data: {
-        orderId: id,
+      await tx.rentalEvent.create({
+        data: {
+          orderId: id,
         eventType: 'PICKUP',
         scheduledAt: order.rentalStart,
         actualAt: new Date(),
-        inspectedById: req.user.id,
-      },
-    });
+          inspectedById: req.user.id,
+        },
+      });
 
-  });
+      await notificationService.notifyOrderParties(
+        {
+          order,
+          type: 'HANDOVER_COMPLETED',
+          message: `Order ${order.orderNumber} has been handed over and is now in rental.`,
+          entityRef: `order:${order.id}`,
+        },
+        tx
+      );
+
+    });
 
   logActivity({
     userId: req.user.id,
@@ -388,17 +409,37 @@ export async function returnScan(req, res) {
       });
 
       // Record Deposit Ledger deduction for late fee
-      await tx.depositLedger.create({
-        data: {
-          orderId: id,
-          entryType: 'DEDUCTED',
-          amount: lateFeesCalculated,
-          reason: 'Late return fee deduction',
-          relatedLateFeeId: lateFee.id,
-        },
-      });
-    }
-  });
+        await tx.depositLedger.create({
+          data: {
+            orderId: id,
+            entryType: 'DEDUCTED',
+            amount: lateFeesCalculated,
+            reason: 'Late return fee deduction',
+            relatedLateFeeId: lateFee.id,
+          },
+        });
+
+        await notificationService.notifyOrderParties(
+          {
+            order,
+            type: 'PENALTY_APPLIED',
+            message: `Late return penalty of INR ${lateFeesCalculated.toFixed(2)} was applied to order ${order.orderNumber}.`,
+            entityRef: `order:${order.id}`,
+          },
+          tx
+        );
+      } else {
+        await notificationService.notifyOrderParties(
+          {
+            order,
+            type: 'RETURN_COMPLETED',
+            message: `Order ${order.orderNumber} equipment return was successfully received and reconciled.`,
+            entityRef: `order:${order.id}`,
+          },
+          tx
+        );
+      }
+    });
 
   logActivity({
     userId: req.user.id,

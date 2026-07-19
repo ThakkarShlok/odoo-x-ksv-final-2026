@@ -39,4 +39,9 @@ export const env = {
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 900_000),
   rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 500),
   isProduction: (process.env.NODE_ENV ?? 'development') === 'production',
+  smtpHost: process.env.SMTP_HOST || '',
+  smtpPort: Number(process.env.SMTP_PORT ?? 587),
+  smtpUser: process.env.SMTP_USER || '',
+  smtpPass: process.env.SMTP_PASS || '',
+  smtpFrom: process.env.SMTP_FROM || 'Zenith Rentals <noreply@zenith.dev>',
 };

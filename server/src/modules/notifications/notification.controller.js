@@ -5,10 +5,21 @@ import { notificationService } from './notification.service.js';
 export async function listNotifications(req, res) {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '10', 10)));
+  const readStatus = req.query.readStatus || 'ALL';
+  const scope = req.query.scope || 'MINE';
+  const type = req.query.type;
 
   const where = {};
-  if (req.user.role !== 'ADMIN') {
+  if (req.user.role !== 'ADMIN' || scope !== 'ALL') {
     where.userId = req.user.id;
+  }
+  if (readStatus === 'READ') {
+    where.readStatus = true;
+  } else if (readStatus === 'UNREAD') {
+    where.readStatus = false;
+  }
+  if (type) {
+    where.type = type;
   }
 
   const [notifications, totalCount] = await Promise.all([
@@ -31,11 +42,16 @@ export async function listNotifications(req, res) {
   return ok(res, {
     data: notifications.map((n) => ({
       id: n.id,
+      userId: n.userId,
       recipientEmail: n.user?.email || '',
       recipientPhone: n.user?.phone || '',
       type: n.type,
+      message: n.message,
+      entityRef: n.entityRef,
       channel: 'EMAIL',
       status: n.readStatus ? 'READ' : 'SENT',
+      readStatus: n.readStatus,
+      createdAt: n.createdAt,
       sentAt: n.createdAt,
     })),
     meta: {
@@ -44,6 +60,9 @@ export async function listNotifications(req, res) {
       limit,
       totalPages,
       unreadCount,
+      readStatus,
+      scope: req.user.role === 'ADMIN' ? scope : 'MINE',
+      type: type ?? null,
     },
   });
 }
@@ -78,17 +97,26 @@ export async function sendManualReminder(req, res) {
     return fail(res, { status: 404, message: 'Order not found.' });
   }
 
-  const msg =
-    notificationType === 'OVERDUE_ALERT_1H'
-      ? `Critical Warning: Your rental for order "${order.orderNumber}" is overdue! Late fees are accumulating.`
-      : `Friendly reminder: Your rental return for order "${order.orderNumber}" is due in 24 hours.`;
+  const normalizedType =
+    notificationType === 'PRE_RETURN_24H'
+      ? 'RETURN_DUE_TOMORROW'
+      : notificationType === 'OVERDUE_ALERT_1H'
+        ? 'RETURN_OVERDUE'
+        : notificationType;
 
-  await notificationService.create({
-    userId: order.customerId,
-    type: notificationType,
-    message: msg,
-    entityRef: orderId,
+  const message =
+    normalizedType === 'RETURN_OVERDUE'
+      ? `Order ${order.orderNumber} is overdue. Return needs attention immediately.`
+      : normalizedType === 'PICKUP_DUE_TOMORROW'
+        ? `Order ${order.orderNumber} is scheduled for pickup tomorrow.`
+        : `Order ${order.orderNumber} is due back tomorrow.`;
+
+  await notificationService.notifyOrderPartiesOnce({
+    order,
+    type: normalizedType,
+    message,
+    entityRef: `order:${order.id}`,
   });
 
-  return ok(res, { message: 'Notification job queued successfully in BullMQ.' });
+  return ok(res, { message: 'Reminder notification recorded.' });
 }

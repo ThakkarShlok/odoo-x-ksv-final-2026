@@ -1,6 +1,7 @@
 import { prisma } from '../../config/prisma.js';
 import { ok, fail } from '../../lib/apiResponse.js';
 import { logActivity } from '../../lib/activityLog.js';
+import { notificationService } from '../notifications/notification.service.js';
 
 export async function getDepositDetails(req, res) {
   const { orderId } = req.params;
@@ -103,6 +104,16 @@ export async function reconcileDeposit(req, res) {
       where: { id: order.id },
       data: { status: 'CLOSED' },
     });
+
+    await notificationService.notifyOrderParties(
+      {
+        order,
+        type: 'DEPOSIT_REFUNDED',
+        message: `Deposit settlement for order ${order.orderNumber} refunded INR ${balance.toFixed(2)}.`,
+        entityRef: `order:${order.id}`,
+      },
+      tx
+    );
   });
 
   logActivity({
@@ -182,6 +193,16 @@ export async function overrideDeposit(req, res) {
       where: { id: order.id },
       data: { status: 'CLOSED' },
     });
+
+    await notificationService.notifyOrderParties(
+      {
+        order,
+        type: 'DEPOSIT_REFUNDED',
+        message: `Deposit settlement for order ${order.orderNumber} refunded INR ${targetRefund.toFixed(2)} after admin override.`,
+        entityRef: `order:${order.id}`,
+      },
+      tx
+    );
 
     // Log to immutable Audit/Activity trail
     const audit = await tx.activityLog.create({

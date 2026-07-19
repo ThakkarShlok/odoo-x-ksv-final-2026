@@ -14,6 +14,38 @@
  *      need the notification and the action to commit together.
  */
 import { prisma } from '../../config/prisma.js';
+import { mailService } from './mail.service.js';
+
+async function orderAudience(order, tx = prisma) {
+  const admins = await tx.user.findMany({
+    where: { role: 'ADMIN' },
+    select: { id: true },
+  });
+
+  return Array.from(new Set([order.customerId, ...admins.map((admin) => admin.id)].filter(Boolean)));
+}
+
+async function triggerEmailsForParties(order, type, recipientIds, tx = prisma) {
+  try {
+    const customers = await tx.user.findMany({
+      where: {
+        id: { in: recipientIds },
+        role: 'CUSTOMER',
+      },
+      select: { id: true },
+    });
+    
+    if (customers.length > 0) {
+      setTimeout(() => {
+        mailService.sendOrderNotificationEmail(order.id, type).catch((err) => {
+          console.error(`[notification.service] Failed to send order notification email for ${order.id}:`, err);
+        });
+      }, 0);
+    }
+  } catch (err) {
+    console.error('[notification.service] Failed to check and trigger emails:', err);
+  }
+}
 
 export const notificationService = {
   /**
@@ -27,5 +59,63 @@ export const notificationService = {
     return tx.notification.create({
       data: { userId, type, message, entityRef: entityRef ?? null },
     });
+  },
+
+  async createIfAbsent({ userId, type, message, entityRef }, tx = prisma) {
+    const existing = await tx.notification.findFirst({
+      where: {
+        userId,
+        type,
+        entityRef: entityRef ?? null,
+      },
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    return this.create({ userId, type, message, entityRef }, tx);
+  },
+
+  async notifyOrderParties({ order, type, message, entityRef }, tx = prisma) {
+    const recipientIds = await orderAudience(order, tx);
+
+    // Trigger HTML emails asynchronously
+    triggerEmailsForParties(order, type, recipientIds, tx);
+
+    return Promise.all(
+      recipientIds.map((userId) =>
+        this.create(
+          {
+            userId,
+            type,
+            message,
+            entityRef: entityRef ?? `order:${order.id}`,
+          },
+          tx
+        )
+      )
+    );
+  },
+
+  async notifyOrderPartiesOnce({ order, type, message, entityRef }, tx = prisma) {
+    const recipientIds = await orderAudience(order, tx);
+
+    // Trigger HTML emails asynchronously
+    triggerEmailsForParties(order, type, recipientIds, tx);
+
+    return Promise.all(
+      recipientIds.map((userId) =>
+        this.createIfAbsent(
+          {
+            userId,
+            type,
+            message,
+            entityRef: entityRef ?? `order:${order.id}`,
+          },
+          tx
+        )
+      )
+    );
   },
 };
