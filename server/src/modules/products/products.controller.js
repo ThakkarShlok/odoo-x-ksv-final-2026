@@ -66,6 +66,55 @@ export async function listCategories(req, res) {
   });
 }
 
+export async function getCatalogStorefront(req, res) {
+  const categories = await prisma.category.findMany({
+    include: {
+      children: {
+        include: {
+          products: {
+            where: { isRentable: true }
+          }
+        }
+      },
+      products: {
+        where: { isRentable: true }
+      }
+    },
+    orderBy: { name: 'asc' }
+  });
+
+  const defaultSettings = await prisma.rentalSettings.findFirst({
+    where: { isActive: true },
+  });
+
+  function applyPricing(cat) {
+    const custom = categorySettings.get(cat.id);
+    return {
+      id: cat.id,
+      name: cat.name,
+      slug: cat.slug,
+      parentId: cat.parentId,
+      depositMethod: custom?.depositMethod || defaultSettings?.depositRuleType || 'PERCENTAGE',
+      depositValue: custom?.depositValue || defaultSettings?.depositValue?.toString() || '20.00',
+      baseHourlyRate: custom?.baseHourlyRate || '10.00',
+      baseDailyRate: custom?.baseDailyRate || '50.00',
+      products: cat.products?.map(p => ({
+        id: p.id,
+        name: p.name,
+        brand: p.brand,
+        description: p.description,
+        color: p.color,
+        size: p.size,
+      })) || [],
+      children: cat.children ? cat.children.map(applyPricing) : []
+    };
+  }
+
+  const responseData = categories.filter(c => !c.parentId).map(applyPricing);
+
+  return ok(res, { data: responseData });
+}
+
 export async function createCategory(req, res) {
   const { name, depositMethod, depositValue, baseHourlyRate, baseDailyRate } = req.body;
 
@@ -107,6 +156,55 @@ export async function createCategory(req, res) {
       baseDailyRate: baseDailyRate.toString(),
       createdAt: category.createdAt,
     },
+  });
+}
+
+export async function updateCategory(req, res) {
+  const { id } = req.params;
+  const { name, depositMethod, depositValue, baseHourlyRate, baseDailyRate } = req.body;
+
+  const category = await prisma.category.findUnique({ where: { id } });
+  if (!category) {
+    return fail(res, { status: 404, message: 'Category not found.' });
+  }
+
+  if (name && name !== category.name) {
+    const existing = await prisma.category.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } },
+    });
+    if (existing) {
+      return fail(res, { status: 409, message: 'Category name already exists.' });
+    }
+    
+    await prisma.category.update({
+      where: { id },
+      data: { name, slug: slugify(name) },
+    });
+  }
+
+  const currentSettings = categorySettings.get(id) || {};
+  
+  categorySettings.set(id, {
+    depositMethod: depositMethod !== undefined ? depositMethod : currentSettings.depositMethod,
+    depositValue: depositValue !== undefined ? depositValue.toString() : currentSettings.depositValue,
+    baseHourlyRate: baseHourlyRate !== undefined ? baseHourlyRate.toString() : currentSettings.baseHourlyRate,
+    baseDailyRate: baseDailyRate !== undefined ? baseDailyRate.toString() : currentSettings.baseDailyRate,
+  });
+
+  logActivity({
+    userId: req.user.id,
+    action: 'category.update',
+    entityType: 'Category',
+    entityId: id,
+    metadata: { name },
+  });
+
+  return ok(res, {
+    data: {
+      id,
+      name: name || category.name,
+      ...categorySettings.get(id),
+    }
   });
 }
 

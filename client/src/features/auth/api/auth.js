@@ -2,12 +2,16 @@ import api from '@/api/axios';
 
 export async function login({ email, password }) {
   const res = await api.post('/auth/login', { email, password });
-  return res.data.data;
+  const { accessToken, user } = res.data.data;
+  return { token: accessToken, user };
 }
 
-export async function register({ email, password, name }) {
-  const res = await api.post('/auth/register', { email, password, name });
-  return res.data.data;
+export async function register({ fullName, email, password, phoneNumber, address }) {
+  const res = await api.post('/auth/register', { fullName, email, password, phoneNumber, address });
+  // Registration doesn't return a token — login after register
+  const loginRes = await api.post('/auth/login', { email, password });
+  const { accessToken, user } = loginRes.data.data;
+  return { token: accessToken, user };
 }
 
 export async function fetchMe() {

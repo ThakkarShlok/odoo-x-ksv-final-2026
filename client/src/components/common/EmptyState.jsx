@@ -1,22 +1,13 @@
-import { Inbox } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { PackageOpen } from 'lucide-react';
 
-export function EmptyState({
-  title = 'Nothing here yet',
-  message,
-  action,
-  className,
-}) {
+export function EmptyState({ icon: Icon = PackageOpen, title = 'No data', message = 'Nothing to display yet.' }) {
   return (
-    <div className={cn('flex flex-col items-center justify-center gap-3 py-12 text-center', className)}>
-      <div className="rounded-full bg-muted p-3">
-        <Inbox className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+    <div className="flex flex-col items-center justify-center py-16 text-center">
+      <div className="mb-4 rounded-full bg-muted p-4">
+        <Icon className="h-8 w-8 text-muted-foreground" />
       </div>
-      <div>
-        <p className="font-semibold text-foreground">{title}</p>
-        {message ? <p className="mt-1 text-sm text-muted-foreground">{message}</p> : null}
-      </div>
-      {action ?? null}
+      <h3 className="text-lg font-semibold text-foreground">{title}</h3>
+      <p className="mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
     </div>
   );
 }

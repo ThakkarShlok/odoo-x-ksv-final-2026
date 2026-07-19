@@ -12,7 +12,8 @@ export const createQuotationRules = [
   body('rentalEnd').isISO8601().withMessage('rentalEnd must be a valid ISO8601 date.'),
   body('fulfillmentMethod').isIn(['STORE_PICKUP', 'DELIVERY']).withMessage('fulfillmentMethod must be STORE_PICKUP or DELIVERY.'),
   body('items').isArray({ min: 1 }).withMessage('items must be a non-empty array.'),
-  body('items.*.assetId').isUUID().withMessage('Each item assetId must be a valid UUID.'),
+  body('items.*.assetId').optional({ nullable: true }).isUUID().withMessage('Each item assetId must be a valid UUID.'),
+  body('items.*.categoryId').optional({ nullable: true }).isUUID().withMessage('Each item categoryId must be a valid UUID.'),
   body('customerId').optional().isUUID().withMessage('customerId must be a valid UUID.'),
 ];
 

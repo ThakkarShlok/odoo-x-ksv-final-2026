@@ -10,7 +10,9 @@ import {
 } from './products.validators.js';
 import {
   listCategories,
+  getCatalogStorefront,
   createCategory,
+  updateCategory,
   createPricelist,
   createQuotationTemplate,
 } from './products.controller.js';
@@ -19,9 +21,12 @@ const router = Router();
 
 // Publicly browse catalog categories
 router.get('/', listCategoriesRules, validate, listCategories);
+router.get('/catalog', getCatalogStorefront);
 
 // Admin configurations
+// Admin configurations
 router.post('/', authMiddleware, requireRole('ADMIN'), createCategoryRules, validate, createCategory);
+router.patch('/:id', authMiddleware, requireRole('ADMIN'), createCategoryRules, validate, updateCategory);
 router.post('/pricelists', authMiddleware, requireRole('ADMIN'), createPricelistRules, validate, createPricelist);
 router.post('/quotation-templates', authMiddleware, requireRole('ADMIN'), createTemplateRules, validate, createQuotationTemplate);
 

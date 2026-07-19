@@ -1,118 +1,83 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Bell } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
-  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
+  DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import {
-  fetchNotifications,
-  markNotificationRead,
-  markAllNotificationsRead,
-} from '../api/notifications';
-
-const POLL_MS = 30_000;
+import { useApi } from '@/hooks/useApi';
+import { markAsRead, markAllAsRead } from '../api/notifications';
+import { formatRelative } from '@/lib/utils';
+import toast from 'react-hot-toast';
 
 export function NotificationBell() {
-  const [items, setItems] = useState([]);
-  const [unread, setUnread] = useState(0);
+  const [open, setOpen] = useState(false);
+  const { data, meta, refetch } = useApi('/notifications', { params: { limit: 10 } });
 
-  const load = useCallback(async () => {
+  const unreadCount = meta?.unreadCount || 0;
+  const notifications = data || [];
+
+  async function handleMarkAllRead() {
     try {
-      const { data, meta } = await fetchNotifications();
-      setItems(data);
-      setUnread(meta?.unreadCount ?? 0);
-    } catch {
-      // transient failure: do not break the whole app chrome
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
-  }, [load]);
-
-  async function onMarkOne(id) {
-    setUnread((n) => Math.max(0, n - 1));
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, readStatus: true } : it)));
-    try {
-      await markNotificationRead(id);
-    } finally {
-      load();
+      await markAllAsRead();
+      refetch();
+    } catch (e) {
+      toast.error('Failed to mark all as read');
     }
   }
 
-  async function onMarkAll() {
-    setUnread(0);
-    setItems((prev) => prev.map((it) => ({ ...it, readStatus: true })));
+  async function handleMarkRead(id) {
     try {
-      await markAllNotificationsRead();
-    } finally {
-      load();
-    }
+      await markAsRead(id);
+      refetch();
+    } catch (e) {}
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button
-          className="relative rounded-md p-2 text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
-        >
-          <Bell className="h-5 w-5" aria-hidden="true" />
-          {unread > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-accent px-1 text-[0.65rem] font-bold text-accent-foreground">
-              {unread > 9 ? '9+' : unread}
-            </span>
-          ) : null}
-        </button>
+        <Button variant="ghost" size="sm" className="relative h-9 w-9 p-0 rounded-full">
+          <Bell className="h-4 w-4" />
+          {unreadCount > 0 && (
+            <span className="absolute right-2 top-2 flex h-2 w-2 rounded-full bg-destructive"></span>
+          )}
+        </Button>
       </DropdownMenuTrigger>
-
-      <DropdownMenuContent className="w-80">
-        <div className="flex items-center justify-between px-2 py-1.5">
-          <DropdownMenuLabel className="px-0 py-0">Notifications</DropdownMenuLabel>
-          {unread > 0 ? (
-            <button
-              onClick={onMarkAll}
-              className="text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
+      <DropdownMenuContent align="end" className="w-80">
+        <div className="flex items-center justify-between px-4 py-2">
+          <span className="text-sm font-semibold">Notifications</span>
+          {unreadCount > 0 && (
+            <Button variant="ghost" size="sm" className="h-auto p-0 text-xs text-primary" onClick={handleMarkAllRead}>
               Mark all read
-            </button>
-          ) : null}
+            </Button>
+          )}
         </div>
         <DropdownMenuSeparator />
-
-        {items.length === 0 ? (
-          <p className="px-2 py-6 text-center text-sm text-muted-foreground">You're all caught up.</p>
-        ) : (
-          items.slice(0, 8).map((n) => (
-            <DropdownMenuItem
-              key={n.id}
-              onSelect={(e) => {
-                e.preventDefault();
-                if (!n.readStatus) onMarkOne(n.id);
-              }}
-            >
-              <span
-                className={`mt-1 h-2 w-2 shrink-0 rounded-full ${n.readStatus ? 'bg-transparent' : 'bg-accent'}`}
-                aria-hidden="true"
-              />
-              <span className="flex flex-col gap-0.5">
-                <span className={n.readStatus ? 'text-muted-foreground' : 'font-medium text-foreground'}>
-                  {n.message}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {formatDistanceToNow(new Date(n.createdAt), { addSuffix: true })}
-                </span>
-              </span>
-            </DropdownMenuItem>
-          ))
-        )}
+        <div className="max-h-80 overflow-y-auto">
+          {notifications.length === 0 ? (
+            <div className="p-4 text-center text-sm text-muted-foreground">No notifications</div>
+          ) : (
+            notifications.map((n) => (
+              <DropdownMenuItem
+                key={n.id}
+                className={`flex flex-col items-start gap-1 p-3 cursor-pointer ${n.status === 'SENT' ? 'bg-primary/5' : ''}`}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  if (n.status === 'SENT') handleMarkRead(n.id);
+                }}
+              >
+                <div className="flex w-full items-center justify-between">
+                  <span className="font-medium text-sm">{n.type.replace(/_/g, ' ')}</span>
+                  <span className="text-[10px] text-muted-foreground">{formatRelative(n.sentAt)}</span>
+                </div>
+                <p className="text-xs text-muted-foreground line-clamp-1">{n.recipientEmail}</p>
+              </DropdownMenuItem>
+            ))
+          )}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

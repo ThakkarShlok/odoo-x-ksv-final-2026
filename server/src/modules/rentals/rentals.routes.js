@@ -15,6 +15,8 @@ import {
   handoverPickup,
   returnScan,
   cancelRental,
+  getRentalById,
+  performOrderAction,
 } from './rentals.controller.js';
 
 const router = Router();
@@ -22,8 +24,14 @@ const router = Router();
 // Retrieve list of rental orders (scoped to owner if customer)
 router.get('/', authMiddleware, listRentalsRules, validate, listRentals);
 
+// Single order detail (scoped to owner if customer)
+router.get('/:id', authMiddleware, getRentalById);
+
 // Create a draft rental quotation
 router.post('/', authMiddleware, createQuotationRules, validate, createQuotation);
+
+// Unified lifecycle action (admin only): CONFIRM, HANDOVER, RETURN, INSPECT, SETTLE
+router.post('/:id/action', authMiddleware, requireRole('ADMIN'), performOrderAction);
 
 // Handoff pickup scan (field agent/admin only)
 router.post('/:id/handover', authMiddleware, requireRole('ADMIN', 'FIELD_AGENT'), handoverRules, validate, handoverPickup);

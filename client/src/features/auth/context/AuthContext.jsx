@@ -69,6 +69,7 @@ export function AuthProvider({ children }) {
   );
 
   const logout = useCallback(() => {
+    api.post('/auth/logout').catch(() => {}); // Best-effort server logout
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     setUser(null);
@@ -78,6 +79,8 @@ export function AuthProvider({ children }) {
     user,
     loading,
     isAuthenticated: Boolean(user),
+    isAdmin: user?.role === 'ADMIN',
+    isCustomer: user?.role === 'CUSTOMER',
     login,
     register,
     logout,

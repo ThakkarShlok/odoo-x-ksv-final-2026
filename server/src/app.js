@@ -33,6 +33,10 @@ import depositsRoutes from './modules/deposits/deposits.routes.js';
 import inspectionsRoutes from './modules/inspections/inspections.routes.js';
 import reportsRoutes from './modules/reports/reports.routes.js';
 import aiRoutes from './modules/ai/ai.routes.js';
+import settingsRoutes from './modules/settings/settings.routes.js';
+import pricelistsRoutes from './modules/pricelists/pricelists.routes.js';
+import addressesRoutes from './modules/addresses/addresses.routes.js';
+import invoicesRoutes from './modules/invoices/invoices.routes.js';
 
 export function createApp() {
   const app = express();
@@ -65,6 +69,10 @@ export function createApp() {
   app.use('/api/inspections', inspectionsRoutes);
   app.use('/api/reports', reportsRoutes);
   app.use('/api/ai', aiRoutes);
+  app.use('/api/settings', settingsRoutes);
+  app.use('/api/pricelists', pricelistsRoutes);
+  app.use('/api/users/addresses', addressesRoutes);
+  app.use('/api/invoices', invoicesRoutes);
 
   // ==================== V1 ROUTING ALIASES ====================
   app.use('/api/v1/health', healthRoutes);

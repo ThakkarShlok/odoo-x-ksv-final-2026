@@ -16,6 +16,7 @@ function toPublicRental(order) {
     id: order.id,
     orderNumber: order.orderNumber,
     customerId: order.customerId,
+    customer: order.customer ? { name: order.customer.name, email: order.customer.email } : undefined,
     status: order.status,
     fulfillmentMethod: order.fulfillmentMethod,
     rentalStart: order.rentalStart,
@@ -25,6 +26,7 @@ function toPublicRental(order) {
     totalDeposit: order.depositTotal.toString(),
     totalPenalties: order.totalPenalties?.toString() || '0.00',
     createdAt: order.createdAt,
+    confirmedAt: order.confirmedAt,
   };
 }
 
@@ -52,6 +54,7 @@ export async function listRentals(req, res) {
       skip: (page - 1) * limit,
       take: limit,
       orderBy: { createdAt: 'desc' },
+      include: { customer: { select: { name: true, email: true } } },
     }),
     prisma.rentalOrder.count({ where }),
   ]);
@@ -93,20 +96,43 @@ export async function createQuotation(req, res) {
 
   const orderNumber = `RO-2026-${Date.now().toString().slice(-6)}`;
 
-  const order = await prisma.$transaction(async (tx) => {
+  try {
+    const order = await prisma.$transaction(async (tx) => {
     let subtotal = 0;
     let depositTotal = 0;
 
     const lineItems = [];
 
     for (const item of items) {
-      const unit = await tx.productUnit.findUnique({
-        where: { id: item.assetId },
-        include: { product: true },
-      });
+      let unit;
+      
+      if (item.assetId) {
+        unit = await tx.productUnit.findUnique({
+          where: { id: item.assetId },
+          include: { product: true },
+        });
+      } else if (item.productId) {
+        // Rent a specific item model
+        unit = await tx.productUnit.findFirst({
+          where: {
+            status: 'AVAILABLE',
+            productId: item.productId,
+          },
+          include: { product: true },
+        });
+      } else if (item.categoryId) {
+        // Auto-assign logic for storefront customers
+        unit = await tx.productUnit.findFirst({
+          where: {
+            status: 'AVAILABLE',
+            product: { categoryId: item.categoryId },
+          },
+          include: { product: true },
+        });
+      }
 
       if (!unit) {
-        throw new Error(`Asset not found: ${item.assetId}`);
+        throw new Error(`Available unit not found for this product category.`);
       }
 
       if (unit.status !== 'AVAILABLE') {
@@ -114,13 +140,16 @@ export async function createQuotation(req, res) {
       }
 
       // Check rates from pricelist
-      const pricelistItem = await tx.pricelistItem.findFirst({
-        where: {
-          pricelistId: pricelist.id,
-          productId: unit.productId,
-          durationUnit: 'DAILY',
-        },
-      });
+      let pricelistItem = null;
+      if (pricelist) {
+        pricelistItem = await tx.pricelistItem.findFirst({
+          where: {
+            pricelistId: pricelist.id,
+            productId: unit.productId,
+            durationUnit: 'DAILY',
+          },
+        });
+      }
 
       const dailyRate = pricelistItem ? parseFloat(pricelistItem.rate) : 50.00;
       const itemSubtotal = dailyRate * durationDays;
@@ -190,6 +219,8 @@ export async function createQuotation(req, res) {
     }
 
     return newOrder;
+  }).catch((err) => {
+    throw err;
   });
 
   logActivity({
@@ -204,6 +235,9 @@ export async function createQuotation(req, res) {
     status: 201,
     data: toPublicRental(order),
   });
+  } catch (error) {
+    return fail(res, { status: 400, message: error.message || 'Failed to create quotation.' });
+  }
 }
 
 export async function handoverPickup(req, res) {
@@ -456,4 +490,295 @@ export async function cancelRental(req, res) {
   });
 
   return ok(res, { message: `Order cancelled. Hold amount of $${order.depositTotal} has been released.` });
+}
+
+// ─── Single order detail ─────────────────────────────────────────
+export async function getRentalById(req, res) {
+  const { id } = req.params;
+
+  const order = await prisma.rentalOrder.findUnique({
+    where: { id },
+    include: {
+      customer: { select: { id: true, name: true, email: true, phone: true } },
+      lines: {
+        include: {
+          product: { select: { id: true, name: true, sku: true, brand: true } },
+          productUnit: { select: { id: true, serialNumber: true, condition: true, status: true } },
+        },
+      },
+      payments: { orderBy: { createdAt: 'desc' } },
+      depositLedger: { orderBy: { createdAt: 'asc' } },
+      lateFees: true,
+      invoices: { orderBy: { createdAt: 'desc' } },
+      events: { orderBy: { createdAt: 'asc' }, include: { inspectedBy: { select: { name: true } } } },
+    },
+  });
+
+  if (!order) {
+    return fail(res, { status: 404, message: 'Order not found.' });
+  }
+
+  // IDOR defence: customers can only see their own orders
+  if (req.user.role === 'CUSTOMER' && order.customerId !== req.user.id) {
+    return fail(res, { status: 403, message: 'Forbidden.' });
+  }
+
+  // Compute deposit balance from ledger
+  let depositHeld = 0, depositDeducted = 0, depositRefunded = 0;
+  for (const entry of order.depositLedger) {
+    const amt = parseFloat(entry.amount);
+    if (entry.entryType === 'HELD') depositHeld += amt;
+    else if (entry.entryType === 'DEDUCTED') depositDeducted += amt;
+    else if (entry.entryType === 'REFUNDED') depositRefunded += amt;
+  }
+  const depositBalance = depositHeld - depositDeducted - depositRefunded;
+
+  return ok(res, {
+    data: {
+      id: order.id,
+      orderNumber: order.orderNumber,
+      status: order.status,
+      fulfillmentMethod: order.fulfillmentMethod,
+      rentalStart: order.rentalStart,
+      rentalEnd: order.rentalEnd,
+      subtotal: order.subtotal.toString(),
+      taxTotal: order.taxTotal.toString(),
+      total: order.total.toString(),
+      depositTotal: order.depositTotal.toString(),
+      currency: order.currency,
+      confirmedAt: order.confirmedAt,
+      cancelledAt: order.cancelledAt,
+      createdAt: order.createdAt,
+      customer: order.customer,
+      lines: order.lines.map((l) => ({
+        id: l.id,
+        product: l.product,
+        unit: l.productUnit,
+        durationUnit: l.durationUnit,
+        durationCount: l.durationCount,
+        rateApplied: l.rateApplied.toString(),
+        lineSubtotal: l.lineSubtotal.toString(),
+      })),
+      payments: order.payments.map((p) => ({
+        id: p.id,
+        amount: p.amount.toString(),
+        purpose: p.purpose,
+        status: p.status,
+        method: p.method,
+        reference: p.reference,
+        createdAt: p.createdAt,
+      })),
+      depositLedger: order.depositLedger.map((d) => ({
+        id: d.id,
+        entryType: d.entryType,
+        amount: d.amount.toString(),
+        reason: d.reason,
+        createdAt: d.createdAt,
+      })),
+      depositSummary: {
+        held: depositHeld.toFixed(2),
+        deducted: depositDeducted.toFixed(2),
+        refunded: depositRefunded.toFixed(2),
+        balance: depositBalance.toFixed(2),
+      },
+      lateFees: order.lateFees.map((f) => ({
+        id: f.id,
+        amount: f.amount.toString(),
+        daysLate: f.daysLate,
+        ruleType: f.ruleType,
+        ruleValue: f.ruleValue.toString(),
+        graceHours: f.graceHours,
+        capAmount: f.capAmount.toString(),
+        computedAt: f.computedAt,
+      })),
+      invoices: order.invoices.map((inv) => ({
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        status: inv.status,
+        amount: inv.amount.toString(),
+        issuedAt: inv.issuedAt,
+      })),
+      events: order.events.map((e) => ({
+        id: e.id,
+        eventType: e.eventType,
+        scheduledAt: e.scheduledAt,
+        actualAt: e.actualAt,
+        conditionNotes: e.conditionNotes,
+        damageFlag: e.damageFlag,
+        inspectorName: e.inspectedBy?.name,
+      })),
+    },
+  });
+}
+
+// ─── Unified lifecycle action dispatcher ─────────────────────────
+export async function performOrderAction(req, res) {
+  const { id } = req.params;
+  const { action } = req.body;
+
+  const order = await prisma.rentalOrder.findUnique({
+    where: { id },
+    include: { lines: { include: { productUnit: true } }, depositLedger: true, events: true },
+  });
+
+  if (!order) {
+    return fail(res, { status: 404, message: 'Order not found.' });
+  }
+
+  switch (action) {
+    case 'CONFIRM': {
+      if (order.status !== 'QUOTATION') {
+        return fail(res, { status: 400, message: 'Only QUOTATION orders can be confirmed.' });
+      }
+      await prisma.rentalOrder.update({
+        where: { id },
+        data: { status: 'CONFIRMED', confirmedAt: new Date() },
+      });
+      return ok(res, { message: 'Order confirmed.', data: { status: 'CONFIRMED' } });
+    }
+
+    case 'HANDOVER': {
+      if (order.status !== 'CONFIRMED' && order.status !== 'QUOTATION') {
+        return fail(res, { status: 400, message: 'Order must be CONFIRMED for handover.' });
+      }
+      await prisma.$transaction(async (tx) => {
+        await tx.rentalOrder.update({ where: { id }, data: { status: 'IN_RENTAL' } });
+        for (const line of order.lines) {
+          await tx.productUnit.update({ where: { id: line.productUnitId }, data: { status: 'RENTED' } });
+          await tx.reservation.updateMany({
+            where: { orderId: id, productUnitId: line.productUnitId },
+            data: { status: 'ACTIVE' },
+          });
+        }
+        await tx.rentalEvent.create({
+          data: {
+            orderId: id, eventType: 'PICKUP',
+            scheduledAt: order.rentalStart, actualAt: new Date(),
+            inspectedById: req.user.id,
+          },
+        });
+        await tx.depositLedger.create({
+          data: {
+            orderId: id, entryType: 'HELD',
+            amount: order.depositTotal,
+            reason: 'Security deposit held on pickup',
+          },
+        });
+      });
+      logActivity({ userId: req.user.id, action: 'rental.handover', entityType: 'RentalOrder', entityId: id });
+      return ok(res, { message: 'Handover completed.', data: { status: 'IN_RENTAL' } });
+    }
+
+    case 'RETURN': {
+      if (order.status !== 'IN_RENTAL') {
+        return fail(res, { status: 400, message: 'Order must be IN_RENTAL for return.' });
+      }
+      const actualReturnTime = new Date();
+      const rentalEnd = new Date(order.rentalEnd);
+      const diffHours = (actualReturnTime.getTime() - rentalEnd.getTime()) / (1000 * 60 * 60);
+      const settings = await prisma.rentalSettings.findFirst({ where: { isActive: true } });
+      const gracePeriod = settings?.gracePeriodHours || 0;
+      let lateFeesCalculated = 0;
+
+      if (diffHours > gracePeriod) {
+        const daysLate = Math.ceil((actualReturnTime.getTime() - rentalEnd.getTime()) / (24 * 60 * 60 * 1000));
+        const lateFeePerDay = settings ? parseFloat(settings.lateFeeValue) : 500;
+        const maxCap = settings ? parseFloat(settings.maxLateFeeCap) : 5000;
+        lateFeesCalculated = Math.min(daysLate * lateFeePerDay, maxCap);
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.rentalOrder.update({ where: { id }, data: { status: 'RETURNED' } });
+        for (const line of order.lines) {
+          await tx.productUnit.update({ where: { id: line.productUnitId }, data: { status: 'AVAILABLE' } });
+          await tx.reservation.updateMany({
+            where: { orderId: id, productUnitId: line.productUnitId },
+            data: { status: 'FULFILLED' },
+          });
+        }
+        await tx.rentalEvent.create({
+          data: {
+            orderId: id, eventType: 'RETURN',
+            scheduledAt: order.rentalEnd, actualAt: actualReturnTime,
+            inspectedById: req.user.id,
+          },
+        });
+        if (lateFeesCalculated > 0) {
+          const lateFee = await tx.lateFee.create({
+            data: {
+              orderId: id,
+              amount: lateFeesCalculated,
+              daysLate: Math.ceil((actualReturnTime.getTime() - rentalEnd.getTime()) / (24 * 60 * 60 * 1000)),
+              ruleType: settings?.lateFeeRuleType || 'PER_DAY_FLAT',
+              ruleValue: settings?.lateFeeValue || 500,
+              graceHours: gracePeriod,
+              capAmount: settings?.maxLateFeeCap || 5000,
+            },
+          });
+          await tx.depositLedger.create({
+            data: {
+              orderId: id, entryType: 'DEDUCTED',
+              amount: lateFeesCalculated,
+              reason: 'Late return fee deduction',
+              relatedLateFeeId: lateFee.id,
+            },
+          });
+        }
+      });
+      logActivity({ userId: req.user.id, action: 'rental.return', entityType: 'RentalOrder', entityId: id, metadata: { lateFees: lateFeesCalculated.toString() } });
+      return ok(res, { message: 'Return processed.', data: { status: 'RETURNED', lateFeesCalculated: lateFeesCalculated.toFixed(2) } });
+    }
+
+    case 'INSPECT': {
+      // Mark damage on the return event
+      const { conditionNotes, damageFlag } = req.body;
+      const returnEvt = order.events.find((e) => e.eventType === 'RETURN');
+      if (returnEvt) {
+        await prisma.rentalEvent.update({
+          where: { id: returnEvt.id },
+          data: { conditionNotes: conditionNotes || 'Damage reported', damageFlag: damageFlag ?? true, inspectedById: req.user.id },
+        });
+      }
+      if (damageFlag) {
+        for (const line of order.lines) {
+          await prisma.productUnit.update({
+            where: { id: line.productUnitId },
+            data: { status: 'DAMAGED', condition: 'DAMAGED', notes: conditionNotes },
+          });
+        }
+      }
+      return ok(res, { message: 'Inspection recorded.', data: { damageFlag } });
+    }
+
+    case 'SETTLE': {
+      if (order.status !== 'RETURNED') {
+        return fail(res, { status: 400, message: 'Order must be RETURNED to settle deposit.' });
+      }
+      const heldEntries = order.depositLedger.filter((e) => e.entryType === 'HELD');
+      const deductedEntries = order.depositLedger.filter((e) => e.entryType === 'DEDUCTED');
+      const refundedEntries = order.depositLedger.filter((e) => e.entryType === 'REFUNDED');
+      const amountHeld = heldEntries.reduce((acc, e) => acc + parseFloat(e.amount), 0);
+      const amountDeducted = deductedEntries.reduce((acc, e) => acc + parseFloat(e.amount), 0);
+      const amountRefunded = refundedEntries.reduce((acc, e) => acc + parseFloat(e.amount), 0);
+      const balance = amountHeld - amountDeducted - amountRefunded;
+
+      await prisma.$transaction(async (tx) => {
+        if (balance > 0) {
+          await tx.depositLedger.create({
+            data: {
+              orderId: id, entryType: 'REFUNDED',
+              amount: balance,
+              reason: 'Deposit refunded on order close',
+            },
+          });
+        }
+        await tx.rentalOrder.update({ where: { id }, data: { status: 'CLOSED' } });
+      });
+      logActivity({ userId: req.user.id, action: 'rental.settle', entityType: 'RentalOrder', entityId: id, metadata: { refund: balance.toFixed(2) } });
+      return ok(res, { message: 'Deposit settled. Order closed.', data: { status: 'CLOSED', refundedAmount: balance.toFixed(2) } });
+    }
+
+    default:
+      return fail(res, { status: 400, message: `Unknown action: ${action}` });
+  }
 }

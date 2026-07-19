@@ -19,12 +19,14 @@ export default function Register() {
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm({ defaultValues: { name: '', email: '', password: '' } });
+  } = useForm({
+    defaultValues: { fullName: '', email: '', password: '', phoneNumber: '', address: '' },
+  });
 
   async function onSubmit(values) {
     try {
       const user = await registerUser(values);
-      toast.success(`Account created. Welcome, ${user.name}.`);
+      toast.success(`Account created. Welcome, ${user.fullName}!`);
       navigate('/app', { replace: true });
     } catch (error) {
       const fieldErrors = getFieldErrors(error);
@@ -43,19 +45,23 @@ export default function Register() {
       <Card>
         <CardHeader>
           <CardTitle>Create your account</CardTitle>
-          <CardDescription>You'll start with an Employee role.</CardDescription>
+          <CardDescription>Start renting equipment in minutes.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
             <div className="space-y-1.5">
-              <Label htmlFor="name">Name</Label>
+              <Label htmlFor="fullName">Full Name</Label>
               <Input
-                id="name"
+                id="fullName"
                 autoComplete="name"
-                aria-invalid={Boolean(errors.name)}
-                {...register('name', { required: 'Name is required.' })}
+                placeholder="Jane Doe"
+                aria-invalid={Boolean(errors.fullName)}
+                {...register('fullName', {
+                  required: 'Full name is required.',
+                  maxLength: { value: 120, message: 'Name is too long.' },
+                })}
               />
-              {errors.name ? <p className="text-xs text-destructive">{errors.name.message}</p> : null}
+              {errors.fullName && <p className="text-xs text-destructive">{errors.fullName.message}</p>}
             </div>
 
             <div className="space-y-1.5">
@@ -64,13 +70,39 @@ export default function Register() {
                 id="email"
                 type="email"
                 autoComplete="email"
+                placeholder="jane@example.com"
                 aria-invalid={Boolean(errors.email)}
                 {...register('email', {
                   required: 'Email is required.',
                   pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Enter a valid email.' },
                 })}
               />
-              {errors.email ? <p className="text-xs text-destructive">{errors.email.message}</p> : null}
+              {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="phoneNumber">Phone Number</Label>
+              <Input
+                id="phoneNumber"
+                type="tel"
+                autoComplete="tel"
+                placeholder="+91 9876543210"
+                aria-invalid={Boolean(errors.phoneNumber)}
+                {...register('phoneNumber', { required: 'Phone number is required.' })}
+              />
+              {errors.phoneNumber && <p className="text-xs text-destructive">{errors.phoneNumber.message}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="address">Address</Label>
+              <Input
+                id="address"
+                autoComplete="street-address"
+                placeholder="123 Main St, City"
+                aria-invalid={Boolean(errors.address)}
+                {...register('address', { required: 'Address is required.' })}
+              />
+              {errors.address && <p className="text-xs text-destructive">{errors.address.message}</p>}
             </div>
 
             <div className="space-y-1.5">
@@ -79,6 +111,7 @@ export default function Register() {
                 id="password"
                 type="password"
                 autoComplete="new-password"
+                placeholder="Min 8 characters"
                 aria-invalid={Boolean(errors.password)}
                 {...register('password', {
                   required: 'Password is required.',

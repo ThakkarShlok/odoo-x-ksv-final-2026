@@ -39,7 +39,7 @@ export default function Login() {
   async function onSubmit(values) {
     try {
       const user = await login(values);
-      toast.success(`Welcome back, ${user.name}.`);
+      toast.success(`Welcome back, ${user.fullName}.`);
       navigate(redirectTo, { replace: true });
     } catch (error) {
       toast.error(getErrorMessage(error, 'Login failed.'));
