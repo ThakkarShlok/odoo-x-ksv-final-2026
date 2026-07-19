@@ -5,7 +5,7 @@
  * in build steps 2–3. Hiding a link is UX only; the route guards + API enforce real access.
  */
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Boxes, LayoutDashboard, PackageSearch, ClipboardList, Warehouse, Activity, LogOut, Package } from 'lucide-react';
+import { Boxes, LayoutDashboard, PackageSearch, ClipboardList, Warehouse, Activity, LogOut, Package, TrendingUp } from 'lucide-react';
 import { useAuth } from '@/features/auth/context/AuthContext';
 import { NotificationBell } from '@/features/notifications/components/NotificationBell';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ const NAV = {
     { to: '/app/products', label: 'Products', icon: Package },
     { to: '/app/rentals', label: 'Rentals', icon: ClipboardList },
     { to: '/app/inventory', label: 'Inventory', icon: Warehouse },
+    { to: '/app/profit-loss', label: 'Profit & Loss', icon: TrendingUp },
     { to: '/app/status', label: 'System Status', icon: Activity },
   ],
   CUSTOMER: [

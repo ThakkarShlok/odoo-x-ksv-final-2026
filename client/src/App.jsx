@@ -18,6 +18,7 @@ import AdminRentals from '@/features/admin/pages/AdminRentals';
 import AdminInventory from '@/features/admin/pages/AdminInventory';
 import AdminProducts from '@/features/admin/pages/AdminProducts';
 import AdminProductForm from '@/features/admin/pages/AdminProductForm';
+import ProfitLoss from '@/features/admin/pages/ProfitLoss';
 import SystemStatus from '@/features/system-status/pages/SystemStatus';
 import NotFound from '@/pages/NotFound';
 
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="products/new" element={<ProtectedRoute roles={['ADMIN']}><AdminProductForm /></ProtectedRoute>} />
             <Route path="products/:id/edit" element={<ProtectedRoute roles={['ADMIN']}><AdminProductForm /></ProtectedRoute>} />
             <Route path="inventory" element={<ProtectedRoute roles={['ADMIN']}><AdminInventory /></ProtectedRoute>} />
+            <Route path="profit-loss" element={<ProtectedRoute roles={['ADMIN']}><ProfitLoss /></ProtectedRoute>} />
 
             <Route path="status" element={<SystemStatus />} />
           </Route>
